@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { createHash } from 'node:crypto';
 import { clickupPool } from './pool.mjs';
 import { alertEvents, ALERT_EVENTS } from '../../alert/events.mjs';
 import { detectIDE } from '../../ide-detect.mjs';
@@ -39,6 +40,27 @@ export const CLICKUP_MODELS = [
 ];
 
 // Note: Server routes using isClickUpModel(model, config) from ./config.mjs
+
+/**
+ * Session affinity key: hash ổn định của hội thoại (salt theo client + tin nhắn user đầu tiên).
+ * Bối cảnh hội thoại đi theo payload (client gửi đủ lịch sử mỗi lượt) nên affinity chỉ là
+ * tối ưu hiệu năng trên cùng workspace — không phải điều kiện đúng/sai của request.
+ */
+function computeSessionKey(req, rawBody) {
+  try {
+    const msgs = Array.isArray(rawBody?.messages) ? rawBody.messages : [];
+    const firstUser = msgs.find((m) => m && m.role === 'user');
+    if (!firstUser) return null;
+    const content = typeof firstUser.content === 'string'
+      ? firstUser.content
+      : JSON.stringify(firstUser.content || '');
+    if (!content) return null;
+    const clientSalt = String(req?.headers?.authorization || req?.headers?.['x-api-key'] || '').slice(0, 72);
+    return createHash('sha256').update(clientSalt + '\u0000' + content.slice(0, 512)).digest('hex').slice(0, 32);
+  } catch {
+    return null;
+  }
+}
 
 export function resolveClickUpModel(reqModel) {
   let model = reqModel || 'gpt-6-luna';
@@ -426,7 +448,7 @@ export function getClickUpFallbackModels(resolvedModel) {
   return [...new Set(fallbacks)];
 }
 
-export async function executeClickUpWithFallback({ payload, workspaceId, signal, initialModel }) {
+export async function executeClickUpWithFallback({ payload, workspaceId, sessionKey, signal, initialModel }) {
   const candidates = getClickUpFallbackModels(initialModel);
   let lastResult = null;
   let lastError = null;
@@ -443,7 +465,7 @@ export async function executeClickUpWithFallback({ payload, workspaceId, signal,
     }
 
     try {
-      const res = await executePooledUpstream({ payload: activePayload, workspaceId, signal });
+      const res = await executePooledUpstream({ payload: activePayload, workspaceId, sessionKey, signal });
       const aiRequestErrors = res.parsed?.data?.aiRequest?.errors;
       if (Array.isArray(aiRequestErrors) && aiRequestErrors.length > 0) {
         const errMsg = aiRequestErrors.map((e) => e?.message || e?.code || JSON.stringify(e)).join('; ');
@@ -493,7 +515,7 @@ export async function executeClickUpWithFallback({ payload, workspaceId, signal,
 /**
  * executePooledUpstream - Sends GraphQL AIRequest to ClickUp Gateway with automatic multi-workspace failover
  */
-export async function executePooledUpstream({ payload, headers = {}, workspaceId = null, signal = null }) {
+export async function executePooledUpstream({ payload, headers = {}, workspaceId = null, sessionKey = null, signal = null }) {
   let lastError = null;
   const enabledWorkspaces = clickupPool.workspaces.filter((w) => w.enabled);
   const attempts = Math.max(1, enabledWorkspaces.length);
@@ -533,6 +555,7 @@ export async function executePooledUpstream({ payload, headers = {}, workspaceId
     try {
       acquired = await clickupPool.acquire({
         preferredWorkspaceId: workspaceId,
+        sessionKey,
         signal,
         excludeWorkspaceIds: triedWorkspaceIds,
       });
@@ -798,6 +821,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
   };
 
   const requestedWs = req.headers['x-workspace-id'] || null;
+  const sessionKey = computeSessionKey(req, rawBody);
 
   if (wantsStream) {
     req.socket?.setNoDelay(true);
@@ -869,9 +893,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       let upstreamResult = await executeClickUpWithFallback({
         payload,
         workspaceId: requestedWs,
+        sessionKey,
         signal,
         initialModel: resolvedModel,
       });
+      if (diagnostics) diagnostics.workspaceId = upstreamResult.workspace?.workspaceId || upstreamResult.workspace?.id || null;
 
       let actualModel = upstreamResult.usedModel || resolvedModel;
       if (diagnostics) diagnostics.model = CLICKUP_MODELS.some(id => resolveClickUpModel(id) === actualModel) ? actualModel : 'other';
@@ -1122,9 +1148,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       let upstreamResult = await executeClickUpWithFallback({
         payload,
         workspaceId: requestedWs,
+        sessionKey,
         signal,
         initialModel: resolvedModel,
       });
+      if (diagnostics) diagnostics.workspaceId = upstreamResult.workspace?.workspaceId || upstreamResult.workspace?.id || null;
 
       let actualModel = upstreamResult.usedModel || resolvedModel;
       if (diagnostics) diagnostics.model = CLICKUP_MODELS.some(id => resolveClickUpModel(id) === actualModel) ? actualModel : 'other';

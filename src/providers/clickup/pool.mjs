@@ -137,6 +137,9 @@ export class WorkspacePool {
   constructor(config = {}, onPersist = null) {
     this.workspaces = [];
     this.accounts = [];
+    // Session affinity: hội thoại -> workspace (in-memory, TTL 12h, tối đa 2000 pin).
+    // Pin là tối ưu hiệu năng — mất khi restart không ảnh hưởng đúng/sai của request.
+    this.sessionPins = new Map();
     this.defaults = {
       workspaceId: '',
       model: 'gpt-6-luna',
@@ -154,6 +157,12 @@ export class WorkspacePool {
       workspaceId: config.defaults?.workspaceId || config.workspaceId || '',
       model: config.defaults?.model || 'gpt-6-luna',
     };
+    // Tự vệ: defaults.workspaceId trỏ vào workspace không còn tồn tại (dữ liệu cũ
+    // ví dụ '1100380000020899') sẽ vô hiệu hóa preferred routing — bỏ để balancer chạy bình thường.
+    if (this.defaults.workspaceId && !rawWorkspaces.some((w) => String(w.workspaceId || '') === this.defaults.workspaceId)) {
+      console.warn(`[ClickUpPool] defaults.workspaceId "${this.defaults.workspaceId}" không tồn tại trong pool — bỏ qua.`);
+      this.defaults.workspaceId = '';
+    }
 
     this.workspaces = rawWorkspaces.map((w, idx) => {
       const qLimit = Number(w.limit ?? this.maxConcurrentPerWorkspace);
@@ -250,7 +259,7 @@ export class WorkspacePool {
     ws.lastDispatchedAt = Date.now();
   }
 
-  async acquire({ preferredWorkspaceId = null, signal = null, excludeWorkspaceIds = [] } = {}) {
+  async acquire({ preferredWorkspaceId = null, sessionKey = null, signal = null, excludeWorkspaceIds = [] } = {}) {
     signal?.throwIfAborted?.();
     const now = Date.now();
     const excludeList = Array.isArray(excludeWorkspaceIds) ? excludeWorkspaceIds : [];
@@ -310,6 +319,19 @@ export class WorkspacePool {
       );
       if (preferred) {
         return await this._bindWorkspace(preferred, signal, poolSaturation);
+      }
+    }
+
+    // ── Session Affinity (đa user) ──
+    // Hội thoại đã ghim workspace và workspace đó RẢNH (0 in-flight) → trả đúng nơi đó
+    // (giữ cache ấm, hành vi ổn định cho một hội thoại). Workspace ghim đang bận →
+    // nhường balancer chọn nơi khác để giữ tốc độ; bối cảnh hội thoại KHÔNG mất vì
+    // client gửi đủ lịch sử trong payload — session được ghim lại theo nơi phục vụ.
+    if (sessionKey) {
+      const pinnedId = this.sessionPins.get(sessionKey)?.workspaceId;
+      const pinnedWs = pinnedId ? available.find((w) => w.workspaceId === pinnedId) : null;
+      if (pinnedWs && pinnedWs.activeRequests === 0) {
+        return await this._bindWorkspace(pinnedWs, signal, poolSaturation);
       }
     }
 
@@ -374,6 +396,7 @@ export class WorkspacePool {
     });
 
     const chosen = scored[0].ws;
+    if (sessionKey) this._pinSession(sessionKey, chosen.workspaceId);
     this._lastDispatchedAccountId = chosen.accountId || null;
     chosen.lastDispatchedAt = now;
 
@@ -408,6 +431,21 @@ export class WorkspacePool {
       workspaceId: ws.workspaceId,
       release,
     };
+  }
+
+  _pinSession(sessionKey, workspaceId) {
+    if (!sessionKey || !workspaceId) return;
+    const now = Date.now();
+    // Giới hạn kích thước + TTL: pin là tối ưu hiệu năng, không phải trạng thái bắt buộc
+    if (this.sessionPins.size >= 2000) {
+      for (const [key, pin] of this.sessionPins) {
+        if (pin.expiresAt <= now) this.sessionPins.delete(key);
+      }
+      while (this.sessionPins.size >= 2000) {
+        this.sessionPins.delete(this.sessionPins.keys().next().value);
+      }
+    }
+    this.sessionPins.set(sessionKey, { workspaceId, expiresAt: now + 12 * 3600 * 1000 });
   }
 
   reportSuccess(ws, tokens = 0) {
@@ -463,15 +501,18 @@ export class WorkspacePool {
       errMsg.includes('fairuseblocked');
 
     if (isQuotaExceeded) {
-      const resetMs = getNextDailyResetTime();
+      // Ưu tiên mốc reset thật từ upstream (quota.dailyResetsAt); heuristic 07:00 UTC chỉ là fallback.
+      // Trước đây ghim cứng "14:00" làm over-cool tới 7 tiếng so với reset thật (07:00 VN).
+      const quotedReset = Date.parse(ws.quota?.dailyResetsAt || '');
+      const resetMs = Number.isFinite(quotedReset) && quotedReset > Date.now() ? quotedReset : getNextDailyResetTime();
       ws.cooldownUntil = resetMs + 60000;
-      ws.cooldownReason = `Hết hạn mức AI ngày (Chờ reset lúc 14:00 - ${new Date(resetMs).toLocaleTimeString('vi-VN')})`;
+      ws.cooldownReason = `Hết hạn mức AI ngày (Chờ reset lúc ${new Date(resetMs).toLocaleTimeString('vi-VN')})`;
       ws.quotaStatus = 'exhausted';
       if (ws.quota) {
         ws.quota.dailyLeft = 0;
         ws.quota.status = 'exhausted';
       }
-      console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) chạm quota ngày (USAGE_QUOTA_EXCEEDED) — cách ly đến 14:00 ngày mai.`);
+      console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) chạm quota ngày (USAGE_QUOTA_EXCEEDED) — cách ly đến ${new Date(ws.cooldownUntil).toLocaleTimeString('vi-VN')}.`);
       this.persist();
       return;
     }
@@ -1547,7 +1588,8 @@ export class WorkspacePool {
         if (isExhausted) {
           ws.quotaStatus = 'exhausted';
           if (!ws.cooldownUntil || ws.cooldownUntil <= Date.now()) {
-            ws.cooldownUntil = getNextDailyResetTime();
+            const quotedReset = Date.parse(quotaObj.dailyResetsAt || '');
+            ws.cooldownUntil = Number.isFinite(quotedReset) && quotedReset > Date.now() ? quotedReset + 60000 : getNextDailyResetTime();
             ws.cooldownReason = 'Fair use daily limit exceeded';
           }
         } else {

@@ -111,7 +111,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       notifier.recordRequest({ outcome, durationMs });
       auditLogs.request({ timestamp: new Date().toISOString(), requestId, method: req.method, path: routePath,
         protocol: routePath === '/v1/messages' ? 'anthropic' : 'openai', requestedModel: diagnostics.requestedModel,
-        resolvedModel: diagnostics.model, stream: diagnostics.stream || false, status: res.statusCode,
+        resolvedModel: diagnostics.model, workspaceId: diagnostics.workspaceId, stream: diagnostics.stream || false, status: res.statusCode,
         durationMs, ttftMs: diagnostics.ttftMs, inputTokens: diagnostics.inputTokens, outputTokens: diagnostics.outputTokens, outcome });
       if (outcome !== 'success') auditLogs.debug({ requestId, code: outcome === 'aborted' ? 'request_aborted' : 'request_error', level: 'error' });
     };

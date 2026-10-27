@@ -7,7 +7,7 @@ export const REQUEST_LOG = path.join(LOG_DIR, 'request-log.jsonl');
 export const DEBUG_LOG = path.join(LOG_DIR, 'debug-log.jsonl');
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_MEMORY = 500;
-const SAFE_FIELDS = new Set(['timestamp', 'requestId', 'method', 'path', 'protocol', 'requestedModel', 'resolvedModel', 'stream', 'status', 'durationMs', 'ttftMs', 'inputTokens', 'outputTokens', 'outcome', 'errorCode', 'code', 'level']);
+const SAFE_FIELDS = new Set(['timestamp', 'requestId', 'method', 'path', 'protocol', 'requestedModel', 'resolvedModel', 'workspaceId', 'stream', 'status', 'durationMs', 'ttftMs', 'inputTokens', 'outputTokens', 'outcome', 'errorCode', 'code', 'level']);
 const SAFE_PATHS = new Set(['/v1/messages', '/v1/chat/completions', '/v1/models', '/health', '/api/status', '/api/quota/refresh']);
 const SAFE_CODES = new Set(['server_start', 'config_loaded', 'key_changed', 'config_error', 'request_error', 'request_aborted', 'upstream_error', 'stream_error', 'server_error']);
 const memory = { request: [], debug: [] };
@@ -26,6 +26,10 @@ function cleanRecord(kind, data) {
     }
     if (key === 'requestedModel' || key === 'resolvedModel') {
       if (typeof value === 'string' && /^[a-zA-Z0-9._/-]{1,100}$/.test(value)) out[key] = value;
+      continue;
+    }
+    if (key === 'workspaceId') {
+      if (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value)) out.workspaceId = value;
       continue;
     }
     if (key === 'protocol') {
