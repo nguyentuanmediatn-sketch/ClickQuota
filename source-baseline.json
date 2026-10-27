@@ -1,0 +1,8 @@
+{
+  "src/clickup-upstream.mjs": "95c72ac2776877c5036406db94c847b9ae87396cc13cc89326c0deeec5b15220",
+  "src/clickup-pool.mjs": "c94b18cceaa8a302c6f165248da4053efacf84d71b0c1b661529488ef3d45570",
+  "src/clickup-tools.mjs": "d29a804dbdc459549e1886004f9edf4092e35c20f4a700cf766482638712d006",
+  "src/behavior.mjs": "58002baaf0ec13ce683e359d9e102c79b7219a1623c44691a39d811782a001a2",
+  "src/tokens.mjs": "0daf19ae2058687b95266dbbf349c623d8a4761c93f8e3c12d64056b81722746",
+  "test/clickup-toolcall-leak-fix.test.mjs": "b03e9ff30c76704c28c420cf8332e3d79bbccc5481badf63ee327a67343cacd9"
+}

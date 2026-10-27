@@ -1,0 +1,8 @@
+node_modules/
+.env
+.state/
+*.log
+.zcode/
+
+# One-off experiments, patches, backups (SOP runner lives here - see docs caveat)
+scratch/

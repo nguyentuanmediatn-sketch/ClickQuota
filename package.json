@@ -1,0 +1,14 @@
+{
+  "name": "clickquota",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone ClickUp AI provider bridge",
+  "engines": { "node": ">=22.15" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:telegram": "node --env-file-if-exists=.env test-telegram.mjs"
+  },
+  "dependencies": { "gpt-tokenizer": "4.0.0" }
+}

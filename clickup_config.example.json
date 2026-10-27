@@ -1,0 +1,8 @@
+{
+  "defaults": { "workspaceId": "YOUR_WORKSPACE_ID", "model": "gpt-6-luna" },
+  "maxConcurrentPerWorkspace": 3,
+  "workspaces": [
+    { "workspaceId": "YOUR_WORKSPACE_ID", "label": "My workspace", "token": "YOUR_CLICKUP_SESSION_TOKEN", "enabled": true, "limit": 3 }
+  ],
+  "accounts": []
+}
