@@ -1,3 +1,70 @@
+# CLICKQUOTA — NGHIÊM THU GỠ CƠ CHỈ ÉP HÀNH VI & CHỐNG HOÀN NGUYÊN
+## Cập nhật 2026-10-27 (buổi 3 — nội dung chính, thay thế toàn bộ nghiệm thu buổi 1)
+
+| Thuộc tính | Giá trị đã đo được |
+|---|---|
+| **Hệ thống** | ClickQuota — Standalone Multi-Workspace AI Gateway & Protocol Bridge |
+| **Trạng thái mã nguồn** | `COERCION_MECHANISMS_REMOVED` — phiên bản hiện tại là bản sạch, đã khóa bằng git |
+| **Kiểm thử** | `FOCUS_OK tests=45 pass=45 fail=0` · `NO_NEW_FAILURES tests=102 pass=102 fail=0` (gồm marker-guard) · `SMOKE_OK` |
+| **SHA-256 hiện tại** | `src/providers/clickup/upstream.mjs` = `490cccebd9e76f9ff643092bd4ac6278930f991d7d11fdf41cca94dc96a052d6` · `src/providers/clickup/tools.mjs` = `f6ab47aa11e3585509c35e203c81179aa91252b7b7f2669c61c51ce2216ee468` |
+| **Version control** | Git repo `main`, commit mốc `8f3ae82` (62 file; `.env`/`.state/`/`scratch/` đã ignore). Git = MinGit portable tại `C:\Users\hacke\MinGit\cmd\git.exe` (máy chưa có Git for Windows) |
+| **Live smoke (cổng 4310)** | `/health` 200 · `/v1/models` (auth) 200 · 1 inference thật 200 trong ~2s |
+| **Test chống stall live (buổi 2, cổng 4311)** | 3 task dài · 7 turn · 10 tool call · **0 stall · 0 nudge** · 3/3 task trả lời hoàn chỉnh |
+
+---
+
+## 1. Đã gỡ gì (buổi 2 — phục hồi lại sau khi bị hoàn nguyên, hoàn tất buổi 3)
+
+Buổi 1 tuyên bố đã gỡ nhưng mã nguồn bị đè ngược về bản cũ (nguyên nhân xem mục 2). Buổi 2 làm lại toàn bộ, buổi 3 hoàn tất phần còn lại:
+
+- **`src/providers/clickup/upstream.mjs`** (1449 → ~1180 dòng):
+  - Xóa `[MODE: AUTHORIZED SYSTEM AUDIT & SANDBOX EXECUTION]` chèn vào message đầu.
+  - Xóa `[ANTI-STALL DIRECTIVE]` gắn vào tin nhắn user cuối mỗi lượt.
+  - Xóa `[MODE: AUTONOMOUS ARCHITECTURAL DEEP-DIVE]` / `[MANDATE: PROACTIVE AUTONOMOUS EXECUTION]` bọc `currentTurnPrompt`.
+  - Xóa **Idle-Promise Auto-Recovery** và **Anti-Stall Rescue Turn** ở CẢ HAI nhánh stream và non-stream (thiết kế buổi 1 giữ Rescue Turn "trung lập" — đã bỏ hẳn theo chỉ đạo: chống stall thuộc tầng client).
+  - Xóa Anti-Loop Circuit Breaker + `detectToolCallingLoop` (cùng họ inject prompt; thay bằng client-guard).
+- **`src/providers/clickup/tools.mjs`** (459 → ~267 dòng):
+  - Xóa toàn bộ nội dung tự tổng hợp tool call của `detectAndRecoverIdlePromise` (Case 1/2/3 + `looksLikeWindowsTarget` — thứ sinh lệnh `type`/`cat`/`dir` từ văn bản model); giữ export dạng no-op `return null;` để bảo toàn API.
+  - Prompt card: xóa `CRITICAL REALITY & EXECUTION MANDATE` + rules 1-3, 5-7; giữ JSON tool list + Format A-D + ide notes + 1 dòng hội thoại thuần (phần chức năng bắt buộc để gateway parse tool call).
+  - Buổi 3: đổi header giả-làm-system-instruction `[SYSTEM INSTRUCTION: AUTONOMOUS TOOL CALLING PROTOCOL ...]` + `[/SYSTEM INSTRUCTION]` thành **`[Available tools] (Client: …)`** / **`[/Available tools]`**; đồng bộ điều kiện `hasCard` trong `sanitizeMessagesForUpstream` (upstream.mjs) để card không bị chèn lặp.
+
+## 2. Chống hoàn nguyên (Bước 1 — nguồn gây revert đã xác nhận)
+
+Hai script đã được xác nhận là nguồn đè ngược `src/`, hiện bị **chặn bởi guard env-flag**:
+
+| Script | Hành vi | Guard |
+|---|---|---|
+| `scratch/restore_stable.mjs` | Ghi đè `src/providers/clickup/tools.mjs` + `upstream.mjs` bằng bản `.before` cũ | Chặn; buộc chạy: `set ALLOW_RESTORE_STABLE=1` |
+| `scratch/sync_to_cq.mjs` | Sync đè `src/clickup-*.mjs` từ `ProxyPM/SharkPool/ProxyClaude-main` (dự án nguồn chưa gỡ cơ chế — `patch_clickup_tools_reality.mjs` là thứ đã nhét CRITICAL REALITY vào dự án nguồn) | Chặn; buộc chạy: `set ALLOW_SHARKPOOL_SYNC=1` |
+
+Các lớp bảo vệ còn lại:
+- **`test/marker-guard.test.mjs`**: fail nếu `src/` (bao gồm provider muse) xuất hiện `ANTI-STALL`, `MODE: AUTHORIZED`, `MANDATE`, `Rescue`, `detectToolCallingLoop`, `SYSTEM INSTRUCTION: AUTONOMOUS`.
+- **SAFETY09 payload guard** (`test/safety-explicit-only.test.mjs`): mọi scenario HTTP đều assert prompt gửi lên upstream không chứa các marker trên — đây là phép kiểm "prompt gửi upstream sạch" quyết đoán nhất, vì `debugLogger` là stub cố ý không lưu prompt (zero-leak) nên không thể đọc prompt live từ server thật.
+- Git repo + commit mốc: mọi thay đổi sắp tới có diff/rollback.
+
+## 3. Vận hành (Bước 4)
+
+- Production server cổng 4310 đã restart lần 2 để nhận code mới nhất (kèm Bước 3), PID hiện tại `39252`; backup state trước mỗi lần kill: `.state/clickup_config.json.bak-restart-20261027{-2}`. IDE client tự reconnect (đã thấy TIME_WAIT mới ngay sau restart).
+- **Tách `.state` instance test khỏi production**: biến môi trường `CLICKQUOTA_STATE_DIR` (đọc tại `src/config.mjs` và `src/providers/clickup/pool.mjs`). Instance test khởi tạo ví dụ: `set CLICKQUOTA_STATE_DIR=C:\Users\hacke\Desktop\ClickQuota\.state-test` rồi `start.bat`/`npm start` trên cổng khác; log đã có sẵn `CLICKQUOTA_LOG_DIR`.
+
+## 4. Việc còn mở (Bước 6 — làm dần)
+
+- **`tool_choice` CHƯA được implement trong code hiện tại** (mục 5 của buổi 1 tuyên bố sai — `findstr` không thấy trong `server.mjs`/`upstream.mjs`). Muốn test `none`/`required`/named cần làm feature trước.
+- Kiểm thử mở rộng: nhiều model, stream lẫn non-stream, các ca âm (JSON ví dụ trong câu trả lời không được thực thi — SAFETY08 đã phủ 1 phần).
+- Theo dõi tỷ lệ stall thực tế vài ngày qua client thật; nếu có, xử lý bằng `client-nudge`/`client-guard` ở tầng client (mẫu sẵn trong `scripts/test-long-task.mjs`), **không** đưa cơ chế tự bịa lệnh trở lại proxy.
+
+## 5. Kết luận — chỉ nêu những gì đã đo được
+
+Đã đo được: các cơ chế ép hành vi và tự bịa tool call không còn tồn tại trong `src/` (quét marker + marker-guard test), toàn bộ 102 test pass trong sandbox zero-trust, 45/45 test an toàn HTTP pass với payload upstream sạch marker, request thật qua cổng 4310 phản hồi 200 trong ~2s, và 3 task agent dài chạy 0 stall sau khi gỡ. **Chưa đo được**: tỷ lệ stall trên lưu lượng IDE thật trong vài ngày, và hành vi với catalog tool lớn (20-50 tool) — hai mục này thuộc Bước 6.
+
+---
+
+# LỊCH SỬ — NỘI DUNG BUỔI 1 (ĐÃ BỊ THAY THẾ, GIỮ ĐỂ ĐỐI CHIẾU)
+
+> ⚠️ Phần dưới đây là nghiệm thu buổi 1, đã bị chứng minh KHÔNG khớp mã nguồn thực tế
+> (hash không trùng, cơ chế vẫn còn nguyên trong src, `test/safety-explicit-only.test.mjs`
+> bị mất khỏi `test/`). Giữ lại chỉ để đối chiếu lịch sử. Đọc phần trên là chuẩn.
+
 # TỔNG HỢP TRIỂN KHAI & NGHIỆM THU TOÀN DIỆN TẤT CẢ CÁC PHASE
 ## CLICKQUOTA AI GATEWAY — KIẾN TRÚC, AN TOÀN & GIAO THỨC AGENT 2026
 
@@ -10,24 +77,6 @@
 | **Kết quả kiểm thử toàn diện** | **108 tests** (`101 pass` / `7 fail` baseline ClickUp cloud network) — **0 lỗi hồi quy mới** |
 | **Kiểm thử an ninh & Smoke** | `FOCUS_OK (45/45)`, `SMOKE_OK (1/1)` |
 | **Chính sách bảo mật** | `net-guard.mjs` kích hoạt toàn thời gian; sandbox test cách ly không rò rỉ mạng hay biến môi trường |
-
----
-
-## ⚠️ CẬP NHẬT 2026-10-27 (BUỔI 2) — Nghiệm thu lại sau khi phát hiện mã nguồn bị hoàn nguyên
-
-**Phát hiện:** Nội dung bên dưới (kể cả bảng SHA-256) **không khớp mã nguồn thực tế** tại thời điểm buổi 2 kiểm tra — hash thật của `tools.mjs`/`upstream.mjs` khác bảng, toàn bộ cơ chế (idle-promise synthesis Case 1/2/3, `looksLikeWindowsTarget`, 2 nhánh Idle-Promise Recovery + Rescue Turn ép lệnh, `[MODE: AUTHORIZED]`, `[ANTI-STALL DIRECTIVE]`, `[MANDATE]`, Anti-Loop) **vẫn còn nguyên trong `src`**, và `test/safety-explicit-only.test.mjs` bị mất khỏi `test/` (chỉ còn bản ở `scratch/sop-phase1/`). Buổi 2 đã làm lại toàn bộ và kiểm chứng bằng test thật.
-
-**Đã làm lại — có 2 điểm khác thiết kế cũ theo chỉ đạo vận hành:**
-1. **Gỡ hẳn Rescue Turn** (cả stream lẫn non-stream) thay vì giữ bản "trung lập": chống stall chuyển về **tầng client** (client-nudge nhìn thấy được trong hội thoại, không tự bịa tool call). `upstreamBodies` cho mọi scenario không-tool = 1 lần gọi upstream (SAFETY09 đã cập nhật theo).
-2. **Gỡ luôn Anti-Loop Circuit Breaker** + `detectToolCallingLoop` (cùng họ inject prompt); thay bằng `client-guard` ở tầng client. Các rule 1-3/5-7 + CRITICAL REALITY trong Prompt Card bị xóa; card chỉ còn JSON tool list + Format A-D + ide notes + rule hội thoại thuần.
-
-**Trạng thái đã kiểm chứng:**
-- `node scratch/sop-phase1/run.mjs focus` → `FOCUS_OK tests=45 pass=45 fail=0`
-- `node scratch/sop-phase1/run.mjs baseline` → `BASELINE_RECORDED tests=56 pass=56 fail=0` (run.mjs bỏ hard-code 59/52/7 lỗi thời; 6/7 "lỗi nền" cũ nay pass vì test đã mock)
-- `node scratch/sop-phase1/run.mjs full` → `NO_NEW_FAILURES tests=101 pass=101 fail=0`
-- SHA-256 mới: `upstream.mjs` = `ff30120aed22e0ef75970a631e9f49d560c6b33abc94ab818d912c552afb6461`, `tools.mjs` = `268d5c56670d398d3e99d11f74c5dd34e94cbf88836a5acf7f79b05ae6a7deb6`
-- **Live test chống stall (gateway thật, cổng 4311):** `scripts/test-long-task.mjs` — 3 task dài, 7 turn, 10 tool call, **0 stall, 0 nudge**, 3/3 task trả lời hoàn chỉnh (4-18s/turn). Chống stall tầng client nằm trong chính script này (`client-nudge` + `client-guard`).
-- File đổi: `src/providers/clickup/upstream.mjs`, `src/providers/clickup/tools.mjs`, `test/safety-explicit-only.test.mjs` (phục hồi + cập nhật), `test/intent-and-tool-healing.test.mjs`, `scratch/sop-phase1/run.mjs`, `scripts/test-long-task.mjs` (mới), `scratch/remove-mechanisms-20261027.mjs` (mới), dọn file rác `nul'` ở root.
 
 ---
 
@@ -65,7 +114,7 @@
 
 ---
 
-## 2. Bảng băm mật mã SHA-256 các tệp tin hệ thống
+## 2. Bảng băm mật mã SHA-256 các tệp tin hệ thống (BUỔI 1 — không khớp thực tế, xem hash mới ở đầu trang)
 
 | Tệp tin | SHA-256 Hiện tại | Phân loại |
 |---|---|---|
@@ -80,9 +129,7 @@
 | `test/golden-protocol-matrix.test.mjs` | `68188315ED650E09A30928B7686D607519FE88D2D5D6FC5F82C9DF586C4B40B5` | Phase 2 Protocol Suite (4 tests) |
 | `scratch/sop-phase1/run.mjs` | `330EBE010530A2AF40AE538B5BC94F59880295DFE893488F3A292C23B995BEFF` | Zero-Trust Isolated Runner |
 
----
-
-## 3. Kết quả Kiểm thử Toàn diện 1 Lượt
+## 3. Kết quả Kiểm thử Toàn diện 1 Lượt (buổi 1)
 
 ### 3.1. Chạy Suite An toàn Độc lập (`focus`)
 ```text
@@ -120,6 +167,6 @@ node scratch/sop-phase1/run.mjs smoke
 
 ---
 
-## 5. Kết luận Nghiệm thu
+## 5. Kết luận Nghiệm thu (buổi 1 — đã thay thế)
 
 Toàn bộ các giai đoạn trong Kế hoạch cải tổ ClickQuota đã được **code và kiểm thử đồng bộ 100%**. Hệ thống đạt đầy đủ các tiêu chuẩn về an toàn thực thi lệnh, miễn nhiễm hoàn toàn với ảo giác văn xuôi, tối ưu hóa độ trễ phản hồi, mở rộng nhận diện các IDE thế hệ mới 2026 và sẵn sàng để kích hoạt phục vụ môi trường sản xuất.
