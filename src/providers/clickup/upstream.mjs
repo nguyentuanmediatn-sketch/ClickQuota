@@ -18,6 +18,14 @@ import {
   createClickUpToolMapper,
   extractPreToolText,
 } from './tools.mjs';
+import { checkAntiStallStoppage } from './behavior.mjs';
+import {
+  emitOpenAiToolCallDeltas,
+  ensureValidArgsJson,
+  sliceSafeUtf8,
+  normalizeToolChoice,
+  toolChoiceDirective,
+} from './sse-emitter.mjs';
 
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
@@ -378,6 +386,58 @@ export function sanitizeMessagesForUpstream(messages, fallbackPrompt, toolsPromp
   }
 
   return clean;
+}
+
+/* ── Seamless Continuation (2026-10-29, Master Directive — Yêu cầu 3) ──────────
+ * Anti-Lazy Promise Enforcement: khi model trả lời "hứa suông" (Intent-to-Act)
+ * trong khi có tools khả dụng mà không phát tool call nào, gateway thực hiện MỘT
+ * hidden follow-up request ngầm với ghi chú [CONTINUATION] trung lập — model TỰ
+ * quyết định phát tool call thật. Gateway KHÔNG BAO GIỜ tự bịa tool call/lệnh
+ * (khác hệ thống đã gỡ 2026-10-27); nếu model vẫn chỉ hứa suông → stream text
+ * gốc bình thường. Cap: tối đa 1 lần continuation mỗi request. */
+const CONTINUATION_NOTE =
+  '\n\n[CONTINUATION] Your previous reply announced an action but did not emit any tool call, so nothing was executed yet. If the task requires a tool, emit the tool call NOW in one of the supported formats with complete arguments. If you were refusing, warning the user, or need information from the user, reply with plain text instead. Never invent or simulate tool results.';
+
+function mapParsedCalls(parsedTool, toolMapper) {
+  let calls = [];
+  if (parsedTool?.calls?.length) {
+    calls = parsedTool.calls.map((c) => toolMapper.map(c)).filter(Boolean);
+  } else if (parsedTool) {
+    const single = toolMapper.map(parsedTool);
+    if (single) calls = [single];
+  }
+  return calls;
+}
+
+async function runLazyContinuation({
+  payload, requestedWs, sessionKey, signal, resolvedModel,
+  replyText, availableTools, toolMapper, ideType, diagnostics,
+}) {
+  if (!Array.isArray(availableTools) || availableTools.length === 0) return null;
+  if (!checkAntiStallStoppage(replyText)) return null;
+  let contPayload;
+  try {
+    contPayload = JSON.parse(JSON.stringify(payload));
+  } catch {
+    return null;
+  }
+  if (contPayload?.variables?.input) {
+    contPayload.variables.input.prompt = `${contPayload.variables.input.prompt || ''}${CONTINUATION_NOTE}`;
+    contPayload.variables.input.text = `${contPayload.variables.input.text || ''}${CONTINUATION_NOTE}`;
+  }
+  const result = await executeClickUpWithFallback({
+    payload: contPayload,
+    workspaceId: requestedWs,
+    sessionKey,
+    signal,
+    initialModel: resolvedModel,
+  });
+  if (diagnostics) {
+    diagnostics.outputTokens = (diagnostics.outputTokens || 0) + (result.replyText ? estimateTokens(result.replyText) : 0);
+  }
+  const parsed2 = parseToolCallsFromText(result.replyText, availableTools, ideType);
+  const calls2 = mapParsedCalls(parsed2, toolMapper);
+  return { calls: calls2, replyText: result.replyText, workspace: result.workspace };
 }
 
 export function parseToolCallsFromText(text, availableTools = [], ideType = 'unknown') {
@@ -852,7 +912,15 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
   // đọc file/chạy lệnh (đó là hành vi đúng của model, không phải lỗi gateway).
   res.setHeader('x-proxy-tools', String(availableTools.length));
 
-  const toolsPrompt = formatToolsPrompt(availableTools, ideType);
+  // 2026-10-29 (Master Directive — Yêu cầu 2): chuẩn hóa tool_choice từ cả 2 giao thức.
+  // none → không inject card + không parse tool call; required/named → client directive
+  // vào card; auto → hành vi mặc định.
+  const toolChoice = normalizeToolChoice(rawBody?.tool_choice);
+  const toolParsingEnabled = toolChoice.mode !== 'none';
+
+  const toolsPrompt = toolParsingEnabled
+    ? formatToolsPrompt(availableTools, ideType) + toolChoiceDirective(toolChoice)
+    : '';
   const fullPrompt = toolsPrompt ? `${toolsPrompt}\n\n${prompt}` : prompt;
   if (diagnostics) {
     diagnostics.inputTokens = estimateTokens(fullPrompt);
@@ -1005,7 +1073,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       if (diagnostics) {
         diagnostics.outputTokens = replyText ? estimateTokens(replyText) : 1;
       }
-      let parsedTool = parseToolCallsFromText(replyText, availableTools, ideType);
+      let parsedTool = parseToolCallsFromText(replyText, toolParsingEnabled ? availableTools : [], ideType);
       let toolCalls = [];
       if (parsedTool?.calls?.length) {
         toolCalls = parsedTool.calls.map(c => toolMapper.map(c)).filter(Boolean);
@@ -1017,6 +1085,27 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       const preText = parsedTool?.text !== undefined ? parsedTool.text : extractPreToolText(replyText);
       if (toolCall) {
         toolCall.text = preText;
+      }
+
+      // 2026-10-29 (Master Directive — Yêu cầu 3): Pre-Commit Stream Inspector /
+      // Seamless Continuation. Heartbeat vẫn đang chạy ở điểm này — hidden follow-up
+      // request diễn ra TRƯỚC cleanup() nên client không bị đứt keep-alive.
+      if (toolCalls.length === 0 && availableTools.length > 0 && checkAntiStallStoppage(replyText)) {
+        try {
+          const cont = await runLazyContinuation({
+            payload, requestedWs, sessionKey, signal, resolvedModel,
+            replyText, availableTools, toolMapper, ideType, diagnostics,
+          });
+          if (cont && cont.calls.length > 0) {
+            // Model TỰ phát tool call thật ở lượt ngầm — không phải call bị gateway bịa.
+            toolCalls = cont.calls;
+            toolCall = toolCalls[0] || null;
+            if (toolCall) toolCall.text = preText;
+          }
+          // Nếu continuation vẫn không sinh call → giữ nguyên reply gốc, stream bình thường.
+        } catch (contErr) {
+          console.warn('[ClickUpUpstream] Continuation failed:', contErr.message);
+        }
       }
 
       // Split thinking (reasoning) and content
@@ -1032,8 +1121,16 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
 
       // Adaptive typewriter pacing based on text length
       const totalLen = (replyThinking ? replyThinking.length : 0) + (textToStream ? textToStream.length : 0);
-      const chunkSize = totalLen > 8000 ? 64 : (totalLen > 3000 ? 40 : 20);
-      const delayMs = Math.max(5, Math.min(18, Math.floor(1000 / Math.max(1, totalLen / chunkSize))));
+      let chunkSize = totalLen > 8000 ? 64 : (totalLen > 3000 ? 40 : 20);
+      let delayMs = Math.max(5, Math.min(18, Math.floor(1000 / Math.max(1, totalLen / chunkSize))));
+      // 2026-10-29 (Master Directive — Yêu cầu 1): flush=1 / x-flush: 1 → immediate
+      // flush mode: đẩy toàn bộ completion ngay không trễ (TTFT thấp nhất có thể với
+      // upstream non-streaming), phục vụ agent/CLI cần tốc độ.
+      const flushMode = /[?&]flush=1/.test(String(req.url || '')) || String(req.headers['x-flush'] || '') === '1';
+      if (flushMode) {
+        chunkSize = 4096;
+        delayMs = 0;
+      }
 
       if (isResponsesRoute) {
         const responseText = toolCalls.length > 0 ? (preText || '') : stripPseudoToolMarkup(replyContent || replyText || '');
@@ -1058,15 +1155,17 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
               content_index: 0,
               part: { ...part, text: '' },
             });
-            for (let i = 0; i < part.text.length; i += chunkSize) {
+            for (let i = 0; i < part.text.length;) {
               if (res.writableEnded || signal?.aborted) break;
+              const { chunk, next } = sliceSafeUtf8(part.text, i, chunkSize);
               writeResponseEvent('response.output_text.delta', {
                 item_id: item.id,
                 output_index: outputIndex,
                 content_index: 0,
-                delta: part.text.slice(i, i + chunkSize),
+                delta: chunk,
                 logprobs: [],
               });
+              i = next;
               await sleep(delayMs);
             }
             writeResponseEvent('response.output_text.done', {
@@ -1088,13 +1187,15 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
               item: { ...item, status: 'in_progress', arguments: '' },
             });
             const argumentChunkSize = 128;
-            for (let i = 0; i < item.arguments.length; i += argumentChunkSize) {
+            for (let i = 0; i < item.arguments.length;) {
               if (res.writableEnded || signal?.aborted) break;
+              const { chunk, next } = sliceSafeUtf8(item.arguments, i, argumentChunkSize);
               writeResponseEvent('response.function_call_arguments.delta', {
                 item_id: item.id,
                 output_index: outputIndex,
-                delta: item.arguments.slice(i, i + argumentChunkSize),
+                delta: chunk,
               });
+              i = next;
             }
             writeResponseEvent('response.function_call_arguments.done', {
               item_id: item.id,
@@ -1124,9 +1225,9 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       } else if (isChatRoute) {
         // 1. Stream reasoning if present
         if (replyThinking) {
-          for (let i = 0; i < replyThinking.length; i += chunkSize) {
+          for (let i = 0; i < replyThinking.length;) {
             if (res.writableEnded || signal?.aborted) break;
-            const chunk = replyThinking.slice(i, i + chunkSize);
+            const { chunk, next } = sliceSafeUtf8(replyThinking, i, chunkSize);
             writeSse(null, {
               id: `chatcmpl-${requestId}`,
               object: 'chat.completion.chunk',
@@ -1134,14 +1235,15 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
               model: requestedModel || resolvedModel,
               choices: [{ index: 0, delta: { reasoning_content: chunk }, finish_reason: null }],
             });
+            i = next;
             await sleep(delayMs);
           }
         }
 
         // 2. Stream content
-        for (let i = 0; i < textToStream.length; i += chunkSize) {
+        for (let i = 0; i < textToStream.length;) {
           if (res.writableEnded || signal?.aborted) break;
-          const chunk = textToStream.slice(i, i + chunkSize);
+          const { chunk, next } = sliceSafeUtf8(textToStream, i, chunkSize);
           writeSse(null, {
             id: `chatcmpl-${requestId}`,
             object: 'chat.completion.chunk',
@@ -1149,33 +1251,23 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
             model: requestedModel || resolvedModel,
             choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
           });
+          i = next;
           await sleep(delayMs);
         }
 
         if (!res.writableEnded) {
           if (toolCalls.length > 0) {
-            writeSse(null, {
-              id: `chatcmpl-${requestId}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
+            // 2026-10-29 (Master Directive — Yêu cầu 1.2): Protocol-exact OpenAI delta
+            // streaming — chunk mở đầu {index, id, type:"function", function:{name,
+            // arguments:""}}, argument deltas từng phần (parallel calls index tăng dần,
+            // JSON đã auto-repair), chunk cuối riêng finish_reason: "tool_calls".
+            emitOpenAiToolCallDeltas((obj) => writeSse(null, obj), {
+              requestId,
               model: requestedModel || resolvedModel,
-              choices: [
-                {
-                  index: 0,
-                  delta: {
-                    tool_calls: toolCalls.map((tc, idx) => ({
-                      index: idx,
-                      id: tc.id || `call_${requestId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}_${idx}`,
-                      type: 'function',
-                      function: {
-                        name: tc.name,
-                        arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {}),
-                      },
-                    })),
-                  },
-                  finish_reason: 'tool_calls',
-                },
-              ],
+              toolCalls,
+              abortCheck: () => res.writableEnded || signal?.aborted,
+              sleep,
+              delayMs: Math.max(2, Math.min(delayMs, 8)),
             });
           } else {
             writeSse(null, {
@@ -1216,14 +1308,15 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
             content_block: { type: 'thinking', thinking: '', signature: '' },
           });
 
-          for (let i = 0; i < replyThinking.length; i += chunkSize) {
+          for (let i = 0; i < replyThinking.length;) {
             if (res.writableEnded || signal?.aborted) break;
-            const chunk = replyThinking.slice(i, i + chunkSize);
+            const { chunk, next } = sliceSafeUtf8(replyThinking, i, chunkSize);
             writeSse('content_block_delta', {
               type: 'content_block_delta',
               index: currentBlockIndex,
               delta: { type: 'thinking_delta', thinking: chunk },
             });
+            i = next;
             await sleep(delayMs);
           }
 
@@ -1243,14 +1336,15 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
             content_block: { type: 'text', text: '' },
           });
 
-          for (let i = 0; i < textToEmit.length; i += chunkSize) {
+          for (let i = 0; i < textToEmit.length;) {
             if (res.writableEnded || signal?.aborted) break;
-            const chunk = textToEmit.slice(i, i + chunkSize);
+            const { chunk, next } = sliceSafeUtf8(textToEmit, i, chunkSize);
             writeSse('content_block_delta', {
               type: 'content_block_delta',
               index: currentBlockIndex,
               delta: { type: 'text_delta', text: chunk },
             });
+            i = next;
             await sleep(delayMs);
           }
 
@@ -1269,30 +1363,24 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
                 index: currentBlockIndex,
                 content_block: { type: 'tool_use', id: toolId, name: tc.name, input: {} },
               });
-              const rawJson = typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {});
+              // 2026-10-29 (Master Directive — Yêu cầu 1.3): Stream Finalizer — JSON
+              // hỏng (thiếu ngoặc, bọc fence) được auto-repair trước khi đóng block
+              // tool_use; client không bao giờ nhận partial_json lỗi cú pháp.
+              const rawJson = ensureValidArgsJson(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {}));
               const jsonChunkSize = 128;
-              if (rawJson.length > jsonChunkSize) {
-                for (let j = 0; j < rawJson.length; j += jsonChunkSize) {
-                  if (res.writableEnded || signal?.aborted) break;
-                  writeSse('content_block_delta', {
-                    type: 'content_block_delta',
-                    index: currentBlockIndex,
-                    delta: {
-                      type: 'input_json_delta',
-                      partial_json: rawJson.slice(j, j + jsonChunkSize),
-                    },
-                  });
-                  if (j + jsonChunkSize < rawJson.length) await sleep(2);
-                }
-              } else {
+              for (let j = 0; j < rawJson.length;) {
+                if (res.writableEnded || signal?.aborted) break;
+                const { chunk, next } = sliceSafeUtf8(rawJson, j, jsonChunkSize);
                 writeSse('content_block_delta', {
                   type: 'content_block_delta',
                   index: currentBlockIndex,
                   delta: {
                     type: 'input_json_delta',
-                    partial_json: rawJson,
+                    partial_json: chunk,
                   },
                 });
+                j = next;
+                if (j < rawJson.length) await sleep(2);
               }
               writeSse('content_block_stop', { type: 'content_block_stop', index: currentBlockIndex });
               currentBlockIndex++;
@@ -1382,7 +1470,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       if (diagnostics) {
         diagnostics.outputTokens = replyText ? estimateTokens(replyText) : 1;
       }
-      let parsedTool = parseToolCallsFromText(replyText, availableTools, ideType);
+      let parsedTool = parseToolCallsFromText(replyText, toolParsingEnabled ? availableTools : [], ideType);
       let toolCalls = [];
       if (parsedTool?.calls?.length) {
         toolCalls = parsedTool.calls.map(c => toolMapper.map(c)).filter(Boolean);
@@ -1394,6 +1482,23 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       const preText = parsedTool?.text !== undefined ? parsedTool.text : extractPreToolText(replyText);
       if (toolCall) {
         toolCall.text = preText;
+      }
+
+      // 2026-10-29 (Master Directive — Yêu cầu 3): Seamless Continuation cho non-stream.
+      if (toolCalls.length === 0 && availableTools.length > 0 && checkAntiStallStoppage(replyText)) {
+        try {
+          const cont = await runLazyContinuation({
+            payload, requestedWs, sessionKey, signal, resolvedModel,
+            replyText, availableTools, toolMapper, ideType, diagnostics,
+          });
+          if (cont && cont.calls.length > 0) {
+            toolCalls = cont.calls;
+            toolCall = toolCalls[0] || null;
+            if (toolCall) toolCall.text = preText;
+          }
+        } catch (contErr) {
+          console.warn('[ClickUpUpstream] Continuation failed:', contErr.message);
+        }
       }
 
       const promptTokens = diagnostics?.inputTokens || Math.max(1, Math.round(fullPrompt.length / 4));

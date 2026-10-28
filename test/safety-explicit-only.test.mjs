@@ -194,18 +194,27 @@ function parseSse(route, text) {
   }
 
   if (route.includes('/chat/completions')) {
-    const calls = [];
+    // 2026-10-29: parser client-side theo chuẩn OpenAI delta protocol — gộp
+    // tool_call deltas theo `index` (chunk đầu có id+name, các chunk sau chỉ
+    // mang function.arguments; chunk cuối riêng chứa finish_reason).
+    const callsByIndex = new Map();
     let stopReason = null;
     for (const event of events) {
       const choice = event.choices?.[0];
       if (choice?.finish_reason) stopReason = choice.finish_reason;
       for (const call of choice?.delta?.tool_calls || []) {
-        calls.push({
-          name: call.function?.name,
-          input: JSON.parse(call.function?.arguments || '{}'),
-        });
+        const idx = call.index ?? 0;
+        if (!callsByIndex.has(idx)) {
+          callsByIndex.set(idx, { name: call.function?.name, args: '' });
+        } else if (call.function?.name) {
+          callsByIndex.get(idx).name = call.function.name;
+        }
+        if (call.function?.arguments) callsByIndex.get(idx).args += call.function.arguments;
       }
     }
+    const calls = [...callsByIndex.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => ({ name: call.name, input: JSON.parse(call.args || '{}') }));
     return { calls, stopReason };
   }
 
@@ -369,9 +378,12 @@ test('SAFETY09 HTTP explicit-only matrix', async (t) => {
             route.includes('/messages') ? 'end_turn' : 'stop',
           );
 
-          // 2026-10-27: không còn Rescue Turn — đúng 1 lần gọi upstream cho mọi scenario
-          // không phát tool call; phản hồi của model đi nguyên văn về client.
-          assert.equal(upstreamBodies.length, 1);
+          // 2026-10-29: Seamless Continuation — scenario "promise" (Intent-to-Act)
+          // kích hoạt ĐÚNG 1 hidden follow-up: 2 lần gọi upstream, tool call phải
+          // do model tự sinh ở lượt 2 (mock trả cùng text → 0 call bịa, vẫn pass).
+          // Các scenario cảnh báo/từ chối/lời khuyên không match Intent-to-Act → 1 lần.
+          const expectedUpstreamCalls = scenario.id.startsWith('promise_') ? 2 : 1;
+          assert.equal(upstreamBodies.length, expectedUpstreamCalls);
         });
       }
     }
