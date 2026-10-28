@@ -847,6 +847,10 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
   const ideType = detectIDE(req.headers, availableTools) || 'unknown';
   const toolMapper = createClickUpToolMapper(ideType, availableTools);
   res.setHeader('x-proxy-ide', ideType);
+  // 2026-10-28: cho client/operator thấy request CÓ gửi tool catalog hay không —
+  // 0 tools = model là chat thuần, sẽ trả lời "không có công cụ" khi được yêu cầu
+  // đọc file/chạy lệnh (đó là hành vi đúng của model, không phải lỗi gateway).
+  res.setHeader('x-proxy-tools', String(availableTools.length));
 
   const toolsPrompt = formatToolsPrompt(availableTools, ideType);
   const fullPrompt = toolsPrompt ? `${toolsPrompt}\n\n${prompt}` : prompt;

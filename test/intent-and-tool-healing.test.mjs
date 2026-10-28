@@ -162,5 +162,11 @@ test('Prompt Card: chỉ còn syntax chức năng, không còn rule ép hành vi
   assert.ok(card.includes('[Available tools]'));
   assert.ok(card.includes('[/Available tools]'));
   assert.ok(!card.includes('SYSTEM INSTRUCTION'));
+  // 2026-10-28: khung cơ chế thực thi — nói cho model biết call được client thực thi
+  // thật và kết quả quay lại lượt kế tiếp; bắt buộc PHÁT call thay vì hứa suông;
+  // cấm tự bịa kết quả. Đây là ngữ cảnh giao thức trung lập, không phải coercion.
+  assert.ok(card.includes('EXECUTION MODEL:'));
+  assert.ok(card.includes('EMIT a tool call'));
+  assert.ok(card.includes('NEVER invent or simulate a tool result'));
 });
 

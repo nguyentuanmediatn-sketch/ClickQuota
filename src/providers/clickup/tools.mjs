@@ -196,6 +196,12 @@ export function buildClickUpToolPromptCard(tools = [], ideType = 'unknown') {
     'The user is working in an IDE/agentic development environment. You have direct access to the following executable tools:\n' +
     JSON.stringify(defs, null, 2) +
     '\n\n' +
+    'EXECUTION MODEL:\n' +
+    '   - Tool calls are EXECUTED by the client agent on the user\'s machine. The result (stdout, file contents, errors) is returned to you as a tool result in the NEXT turn.\n' +
+    '   - To actually perform any file, shell, or system operation, EMIT a tool call in one of the formats below IN THIS RESPONSE. A reply that only says "I will..." performs nothing.\n' +
+    '   - NEVER invent or simulate a tool result (no fake <system> blocks, no pretending a command ran). Wait for the real tool result from the client.\n' +
+    '   - If you need to inspect files or run commands to answer, always choose a tool call over describing what you could do.\n' +
+    '\n' +
     'TOOL CALL SYNTAX:\n' +
     '   Respond using ONE of these standard formats:\n' +
     '   Format A (Standard JSON):\n' +
