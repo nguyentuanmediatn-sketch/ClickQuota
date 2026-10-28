@@ -140,50 +140,13 @@ export function createClickUpToolMapper(ideType = 'unknown', tools = [], cwd = '
           }
         }
         const healedArgs = healToolParameters(targetName, parsedArgs, tools);
-        // Validation an toàn: Generic Required Parameter Guard
-        const targetDef = tools.find(
-          (t) => (t.function?.name || t.name) === targetName || normalizeKey(t.function?.name || t.name) === normalizeKey(targetName)
-        );
-        const paramSchema = targetDef?.function?.parameters || targetDef?.parameters || targetDef?.input_schema || {};
-        const requiredProps = Array.isArray(paramSchema.required) ? paramSchema.required : [];
-        // 1. Kiểm tra theo danh sách required properties trong schema nếu có
-        if (requiredProps.length > 0) {
-          const missing = requiredProps.filter((reqProp) => {
-            const val = healedArgs ? healedArgs[reqProp] : undefined;
-            return val === undefined || val === null || val === '';
-          });
-          if (missing.length > 0) {
-            console.warn(`[ClickUpTools] Bo qua tool call "${targetName}" vi thieu tham so bat buoc: ${missing.join(', ')}`);
-            return null;
-          }
-        }
-        // 2. Fallback kiểm tra cho các tool phổ biến nếu schema không khai báo required
-        const isShell = ['Bash', 'executeShellCommand', 'terminal', 'run_command'].includes(targetName);
-        if (isShell && (!healedArgs || (!healedArgs.command && !healedArgs.CommandLine && !healedArgs.cmd && !healedArgs.script))) {
-          console.warn(`[ClickUpTools] Bo qua tool call "${targetName}" vi khong co command hop le`);
-          return null;
-        }
-        const isRead = ['Read', 'readFile', 'view_file'].includes(targetName);
-        if (isRead && (!healedArgs || (!healedArgs.filePath && !healedArgs.path && !healedArgs.file_path && !healedArgs.AbsolutePath))) {
-          console.warn(`[ClickUpTools] Bo qua tool call "${targetName}" vi khong co duong dan file hop le`);
-          return null;
-        }
-        const isWeb = ['WebFetch', 'fetchUrl', 'read_url_content'].includes(targetName);
-        if (isWeb && (!healedArgs || (!healedArgs.url && !healedArgs.Url && !healedArgs.link))) {
-          console.warn(`[ClickUpTools] Bo qua tool call "${targetName}" vi khong co url hop le`);
-          return null;
-        }
-        // 3. Không bao giờ phát tool call rỗng khi tool CẦN tham số: schema khai báo required
-        // hoặc tool thuộc nhóm thực thi lõi (shell/read/web). Tool có properties nhưng tất cả
-        // optional được phép gọi với {} — đó là call zero-arg hợp lệ, không phải lỗi.
-        if (!healedArgs || Object.keys(healedArgs).length === 0) {
-          const hasProps = Object.keys(paramSchema.properties || {}).length > 0;
-          const needsParams = requiredProps.length > 0 || isShell || isRead || isWeb;
-          if (hasProps && needsParams) {
-            console.warn(`[ClickUpTools] Bo qua tool call "${targetName}" vi input rong hoan toan`);
-            return null;
-          }
-        }
+        // 2026-10-28 (fix "lệnh trước không trả kết quả"): KHÔNG còn drop-im-lặng call
+        // thiếu tham số bắt buộc. Call resolve được tên → pass-through với healedArgs
+        // (kể cả rỗng); IDE client tự validate schema và trả VALIDATION ERROR thật về
+        // cho model — model thấy lỗi và tự sửa tham số ở lượt kế tiếp.
+        // Drop-im-lặng cũ khiến model đứng chờ result không bao giờ đến, rồi chuyển
+        // sang "diễn kịch" (tự bịa tool call format lạ + khối <system> kết quả ảo).
+        // Chốt chặn thực thi là client-side schema validation, không phải gateway.
         return {
           id: call.id || `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'function',

@@ -2,8 +2,42 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { extractPreToolText } from '../src/clickup-tools.mjs';
 import { extractTextToolCalls } from '../src/tools/text-fallback.mjs';
-import { parseToolCallsFromText } from '../src/clickup-upstream.mjs';
+import { parseToolCallsFromText, stripPseudoToolMarkup } from '../src/clickup-upstream.mjs';
 import { createClickUpToolMapper } from '../src/clickup-tools.mjs';
+
+test('Strip pseudo tool markup: removes fake <system> results and unknown invoke blocks', () => {
+  // 2026-10-28 (fix "lệnh trước không trả kết quả"): model "diễn kịch" — tự bịa
+  // kết quả thực thi bằng <system> và nhái tool-call format lạ. Khi mọi call parse
+  // được đều bị mapper loại, markup giả này KHÔNG được stream về client.
+  const acted = `Tôi sẽ kiểm tra thư mục dự án.
+
+<invoke name="functions.exec">
+<parameter name="cmd">git ls-files</parameter>
+</invoke>
+
+<system>Tool ran without output or errors</system>`;
+
+  const cleaned = stripPseudoToolMarkup(acted);
+  assert.ok(!cleaned.includes('<invoke'), 'invoke markup phải bị loại');
+  assert.ok(!cleaned.includes('<system>'), 'khối <system> bịa kết quả phải bị loại');
+  assert.ok(!cleaned.includes('Tool ran without output'), 'nội dung kết quả bịa phải biến mất');
+  assert.ok(cleaned.includes('Tôi sẽ kiểm tra thư mục dự án.'), 'giải thích thật phải được giữ');
+});
+
+test('Strip pseudo tool markup: keeps normal prose untouched', () => {
+  const normal = 'Đây là câu trả lời bình thường có nhắc chữ system và invoke trong câu.';
+  assert.equal(stripPseudoToolMarkup(normal), normal);
+  assert.equal(stripPseudoToolMarkup(''), '');
+  assert.equal(stripPseudoToolMarkup(null), null);
+});
+
+test('Strip pseudo tool markup: removes <tool_call> XML when calls were all dropped', () => {
+  const acted = 'Đang kiểm tra.\n<tool_call>{"name":"Ghost","arguments":{}}</tool_call>\n<system>done</system>';
+  const cleaned = stripPseudoToolMarkup(acted);
+  assert.ok(!cleaned.includes('<tool_call>'));
+  assert.ok(!cleaned.includes('<system>'));
+  assert.ok(cleaned.includes('Đang kiểm tra.'));
+});
 
 test('ClickUp tool call leak fix: extractPreToolText cleanly strips bracket [Tool Call:]', () => {
   const sample = `Em đã có đủ thông tin về livekit.yaml và docker-compose.yml. Em đọc .env.example rồi sửa cả ba file cùng lúc.

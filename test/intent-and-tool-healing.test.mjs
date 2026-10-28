@@ -68,21 +68,24 @@ test('Parameter Healing: extracts raw command into command property for shell to
   assert.equal(healed.command, 'dir /s /b');
 });
 
-test('Tool Mapper: drops empty tool calls missing required commands or paths', () => {
+test('Tool Mapper: passes empty-args calls through for client-side validation', () => {
+  // 2026-10-28 (fix "lệnh trước không trả kết quả"): mapper KHÔNG còn drop-im-lặng
+  // call thiếu tham số. Call resolve được tên → pass-through; IDE client validate
+  // schema và trả VALIDATION ERROR thật cho model → model tự sửa tham số.
   const mapper = createClickUpToolMapper('claude-code', [
     { name: 'Bash', parameters: { properties: { command: { type: 'string' } } } },
     { name: 'Read', parameters: { properties: { filePath: { type: 'string' } } } }
   ]);
 
-  // Empty Bash call should return null, not { input: {} }
   const mappedBash = mapper.map({ name: 'Bash', arguments: {} });
-  assert.equal(mappedBash, null);
+  assert.notEqual(mappedBash, null, 'Bash rỗng phải pass-through để client trả validation error');
+  assert.equal(mappedBash.name, 'Bash');
+  assert.deepEqual(mappedBash.input, {});
 
-  // Empty Read call should return null, not { input: {} }
   const mappedRead = mapper.map({ name: 'Read', arguments: {} });
-  assert.equal(mappedRead, null);
+  assert.notEqual(mappedRead, null);
+  assert.deepEqual(mappedRead.input, {});
 
-  // Valid Bash call should be mapped correctly
   const validBash = mapper.map({ name: 'Bash', arguments: { command: 'npm test' } });
   assert.notEqual(validBash, null);
   assert.equal(validBash.input.command, 'npm test');
@@ -113,7 +116,7 @@ test('Parameter Healing: heals URL and auto-fills default prompt for web tools',
   assert.ok(healed2.prompt);
 });
 
-test('Generic Parameter Guard: drops tool call when required schema parameters are missing', () => {
+test('Generic Parameter Guard: passes empty WebFetch call through (client validates)', () => {
   const mapper = createClickUpToolMapper('claude-code', [
     {
       name: 'WebFetch',
@@ -127,11 +130,14 @@ test('Generic Parameter Guard: drops tool call when required schema parameters a
     }
   ]);
 
-  // Empty WebFetch call (reproducing Turn 50 issue) must be dropped
+  // 2026-10-28: empty WebFetch pass-through — và vì 'prompt' là required trong
+  // schema, healToolParameters tự điền prompt trung tính → client thực thi được
+  // ngay không cần vòng lặp lỗi.
   const mappedEmpty = mapper.map({ name: 'WebFetch', arguments: {} });
-  assert.equal(mappedEmpty, null, 'Empty WebFetch call should be dropped, not emitted as input: {}');
+  assert.notEqual(mappedEmpty, null, 'Empty WebFetch call được pass-through để client validate');
+  assert.ok(mappedEmpty.input && typeof mappedEmpty.input.prompt === 'string' && mappedEmpty.input.prompt.length > 5,
+    'prompt required phải được heal tự điền: ' + JSON.stringify(mappedEmpty.input));
 
-  // WebFetch call with valid url and prompt should pass
   const mappedValid = mapper.map({
     name: 'WebFetch',
     arguments: { url: 'https://example.com', prompt: 'Summarize content' }

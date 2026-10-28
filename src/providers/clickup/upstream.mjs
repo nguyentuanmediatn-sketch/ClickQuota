@@ -779,6 +779,26 @@ export function splitThinkingAndContent(text) {
   return { thinking: '', content: text };
 }
 
+/**
+ * 2026-10-28 (fix "lệnh trước không trả kết quả"): khi model "diễn kịch" — phát
+ * tool-call markup nhái format lạ (vd <invoke name="functions.exec">) hoặc TỰ BỊA
+ * kết quả thực thi bằng khối <system>Tool ran without output...</system> — mọi call
+ * như vậy đều bị mapper loại (tên không có trong catalog) vàmarkup không được stream.
+ * Nhưng phần văn bản vẫn leak về client như prose. Hàm này làm sạch các khối giả đó
+ * trước khi phát text, giữ lại phần giải thích thật của model.
+ */
+export function stripPseudoToolMarkup(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/<invoke[\s\S]*?<\/invoke>/gi, '')
+    .replace(/<invoke[^>]*\/>/gi, '')
+    .replace(/<tool_call[\s\S]*?<\/tool_call>/gi, '')
+    .replace(/<system>[\s\S]*?<\/system>/gi, '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 // Thông báo lỗi trung tính cho client: không lộ tên backend hay message nội bộ.
 // Chi tiết gốc vẫn được ghi ở console/diagnostics phía server.
 function buildNeutralUpstreamError(err, requestId) {
@@ -845,7 +865,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
   let requestedMaxTokens = Number(rawBody?.max_tokens || rawBody?.max_completion_tokens || 8192);
   const estInTokens = estimateTokens(fullPrompt);
   if (estInTokens > 16000) {
-    requestedMaxTokens = Math.min(requestedMaxTokens, Math.max(1024, 30000 - estInTokens));
+    // 2026-10-28 (fix "lệnh trước không trả kết quả"): sàn 1024 khiến reply bị đứt
+    // GIỮA tool-call JSON khi prompt lớn → parser khôi phục được name nhưng MẤT
+    // arguments → call bị loại → model chờ result mãi. Sàn 4096 đủ cho một tool
+    // call JSON hoàn chỉnh (thường < 4KB) trong trường hợp prompt cực lớn.
+    requestedMaxTokens = Math.min(requestedMaxTokens, Math.max(4096, 30000 - estInTokens));
   }
 
   const input = {
@@ -993,7 +1017,9 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
 
       // Split thinking (reasoning) and content
       const { thinking: replyThinking, content: replyContent } = splitThinkingAndContent(replyText);
-      const textToStream = toolCalls.length > 0 ? (preText || '') : replyContent;
+      const textToStream = toolCalls.length > 0
+        ? (preText || '')
+        : stripPseudoToolMarkup(replyContent);
 
       // Tắt heartbeat chỉ khi sẵn sàng bơm chunk thật.
       cleanup();
@@ -1006,7 +1032,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       const delayMs = Math.max(5, Math.min(18, Math.floor(1000 / Math.max(1, totalLen / chunkSize))));
 
       if (isResponsesRoute) {
-        const responseText = toolCalls.length > 0 ? (preText || '') : (replyContent || replyText || '');
+        const responseText = toolCalls.length > 0 ? (preText || '') : stripPseudoToolMarkup(replyContent || replyText || '');
         const output = buildResponsesOutput({
           context: responsesContext,
           text: responseText,
@@ -1376,7 +1402,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       // ra mọi client (label chứa workspaceId thật). Nếu cần debug, xem request log.
       if (isResponsesRoute) {
         const { content: responseContent } = splitThinkingAndContent(replyText);
-        const responseText = toolCalls.length > 0 ? (preText || '') : (responseContent || replyText || '');
+        const responseText = toolCalls.length > 0 ? (preText || '') : stripPseudoToolMarkup(responseContent || replyText || '');
         const output = buildResponsesOutput({
           context: responsesContext,
           text: responseText,
@@ -1401,7 +1427,8 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
           index: 0,
           message: {
             role: "assistant",
-            content: toolCalls.length > 0 ? (preText || null) : replyText
+            // 2026-10-28: nhánh không-calls làm sạch markup tool giả + khối <system> bịa
+            content: toolCalls.length > 0 ? (preText || null) : stripPseudoToolMarkup(replyText)
           },
           finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop"
         };
@@ -1441,7 +1468,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
 
         const content = [];
         if (toolCalls.length === 0) {
-          content.push({ type: "text", text: finalReplyText });
+          content.push({ type: "text", text: stripPseudoToolMarkup(finalReplyText) });
         } else {
           if (preText) content.push({ type: "text", text: preText });
           for (let i = 0; i < toolCalls.length; i++) {
