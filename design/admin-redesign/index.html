@@ -1,0 +1,95 @@
+<meta charset="utf-8">
+<link rel="stylesheet" href="styles/admin.css">
+<!-- ClickQuota Admin Redesign — app shell.
+     Serve this folder statically (e.g. `npx serve .`) — no build step needed. -->
+<div id="cq-admin-redesign" class="cq-root">
+  <div class="cq-app">
+    <aside class="cq-sidebar" aria-label="Điều hướng chính">
+      <div class="cq-brand">
+        <div class="cq-brand-mark"><i data-lucide="waypoints" aria-hidden="true"></i></div>
+        <div><div class="cq-brand-name">ClickQuota</div><div class="cq-brand-sub">Admin Console</div></div>
+      </div>
+
+      <div class="cq-nav-group-label">API Management</div>
+      <nav class="cq-nav" id="cq-nav" aria-label="Routes">
+        <div class="cq-nav-pill" id="cq-nav-pill" aria-hidden="true"></div>
+        <button class="cq-nav-item" data-route="#/api/dashboard"><i data-lucide="gauge" aria-hidden="true"></i><span>Dashboard</span></button>
+        <button class="cq-nav-item" data-route="#/api/endpoints"><i data-lucide="workflow" aria-hidden="true"></i><span>Endpoints</span></button>
+        <button class="cq-nav-item" data-route="#/api/credentials"><i data-lucide="key-round" aria-hidden="true"></i><span>Credentials</span></button>
+        <button class="cq-nav-item" data-route="#/api/sandbox"><i data-lucide="flask-conical" aria-hidden="true"></i><span>Sandbox</span></button>
+
+        <div class="cq-nav-group-label" style="padding-left:2px">System Logs</div>
+        <button class="cq-nav-item" data-route="#/log/system"><i data-lucide="terminal" aria-hidden="true"></i><span>System log</span></button>
+        <button class="cq-nav-item" data-route="#/log/api-audit"><i data-lucide="scroll-text" aria-hidden="true"></i><span>API audit</span></button>
+        <button class="cq-nav-item" data-route="#/log/alerts"><i data-lucide="bell-ring" aria-hidden="true"></i><span>Alerts</span><span class="cq-nav-badge">2</span></button>
+      </nav>
+
+      <div class="cq-sidebar-foot">
+        <span class="cq-live-dot is-pulsing" aria-hidden="true"></span>
+        <span class="cq-side-foot-text">21 workspace · 2 tài khoản</span>
+      </div>
+    </aside>
+
+    <div class="cq-main">
+      <header class="cq-topbar">
+        <div class="cq-crumb">
+          <span class="cq-crumb-section" id="cq-crumb-section">API Management</span>
+          <span class="cq-crumb-title" id="cq-crumb-title">Endpoints</span>
+        </div>
+        <div class="cq-topbar-search">
+          <i data-lucide="search" aria-hidden="true" style="width:14px;height:14px;flex:none"></i>
+          <input id="cq-topbar-q" placeholder="Tìm nhanh" aria-label="Tìm nhanh">
+          <span class="cq-kbd">⌘K</span>
+        </div>
+      </header>
+
+      <div class="cq-views">
+        <section class="cq-view" id="cq-view-dashboard" aria-label="Dashboard"></section>
+        <section class="cq-view" id="cq-view-endpoints" aria-label="Endpoints"></section>
+        <section class="cq-view" id="cq-view-credentials" aria-label="Credentials"></section>
+        <section class="cq-view" id="cq-view-sandbox" aria-label="Sandbox"></section>
+        <section class="cq-view" id="cq-view-system" aria-label="System log"></section>
+        <section class="cq-view" id="cq-view-audit" aria-label="API audit"></section>
+        <section class="cq-view" id="cq-view-alerts" aria-label="Alerts"></section>
+
+        <div class="cq-drawer-scrim" id="cq-drawer-scrim"></div>
+        <aside class="cq-drawer" id="cq-drawer" role="dialog" aria-modal="true" aria-labelledby="cq-drawer-title">
+          <div class="cq-drawer-grab" title="Kéo để đóng"><span></span></div>
+          <div class="cq-drawer-head">
+            <span class="cq-drawer-title" id="cq-drawer-title">Cấu hình endpoint</span>
+            <button class="cq-btn" id="cq-drawer-close-x" style="margin-left:auto;height:28px;padding:0 8px" aria-label="Đóng"><i data-lucide="x"></i></button>
+          </div>
+          <div class="cq-drawer-body">
+            <div class="cq-drawer-field">
+              <label class="cq-field-label" for="cq-drawer-desc">Mô tả</label>
+              <input class="cq-input" id="cq-drawer-desc" spellcheck="false">
+            </div>
+            <div class="cq-drawer-field">
+              <span class="cq-field-label">Rate limit</span>
+              <div class="cq-rate-grid">
+                <div><label class="cq-field-label" for="cq-drawer-rpm">RPM</label><input class="cq-input cq-col-num" id="cq-drawer-rpm" type="number" min="1"></div>
+                <div><label class="cq-field-label" for="cq-drawer-burst">Burst</label><input class="cq-input cq-col-num" id="cq-drawer-burst" type="number" min="1"></div>
+              </div>
+              <div class="cq-hint">Vượt giới hạn → 429 với Retry-After; quota cạn → cooldown theo dailyResetsAt.</div>
+            </div>
+            <div class="cq-drawer-field">
+              <label class="cq-field-label" for="cq-drawer-timeout">Upstream timeout</label>
+              <input class="cq-input" id="cq-drawer-timeout" value="120s" spellcheck="false">
+            </div>
+          </div>
+          <div class="cq-drawer-foot">
+            <button class="cq-btn is-primary" id="cq-drawer-save" style="flex:1">Lưu thay đổi</button>
+            <button class="cq-btn" id="cq-drawer-cancel">Hủy</button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="assets/springs.js"></script>
+<script src="assets/virtual-list.js"></script>
+<script src="assets/mock-data.js"></script>
+<script src="assets/router.js"></script>
+<script src="assets/views-api.js"></script>
+<script src="assets/views-log.js"></script>
+<script src="assets/app.js"></script>
