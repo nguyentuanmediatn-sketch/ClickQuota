@@ -59,8 +59,13 @@ export function parseXmlParameters(body) {
 
 export function extractTextToolCalls(text) {
   if (typeof text !== 'string' || !text.trim()) return null;
-  // SAFETY-02: Loại bỏ khối reasoning / thinking trước khi quét tool call
+  // SAFETY-02: Loại bỏ khối reasoning / thinking trước khi quét tool call.
+  // 2026-10-28 (P2): phủ thêm biến thể <think> (DeepSeek-style) và khối
+  // <thinking> CHƯA ĐÓNG (reasoning bị cắt giữa stream — rất phổ biến);
+  // trước đây cả hai đều leak tool call trong reasoning ra thực thi.
   text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  text = text.replace(/<(?:thinking|think)>(?:(?!<\/(?:thinking|think)>)[\s\S])*$/i, '');
   if (!text.trim()) return null;
 
   const calls = [];
@@ -355,11 +360,20 @@ export function extractTextToolCalls(text) {
   }
 
   // 8. Bare JSON tool call(s): {"name": "Bash", "arguments": {...}} or multiple concatenated {"name":...}{"name":...}
-  if (!calls.length && /"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*\{|"(?:arguments|input|parameters)"\s*:\s*\{[\s\S]*?"name"\s*:\s*"[^"]+"/.test(text)) {
-    try {
+  if (!calls.length && /"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*\{|"(?:arguments|input|parameters)"\s*:\s*\{[\s\S]*?"name"\s*:\s*"[^"]+"/.test(text)) {    try {
       const bareRegex = /\{[^{}]*?"name"[^{}]*?"(?:arguments|input|parameters)"[\s\S]*?\}(?:\s*\})|\{[^{}]*?"(?:arguments|input|parameters)"[^{}]*?"name"[\s\S]*?\}(?:\s*\})/g;
       const matches = text.match(bareRegex);
       if (matches && matches.length) {
+        // SAFETY 2026-10-28 (P1): bare-JSON chỉ được coi là tool call khi JSON
+        // CHIẾMƯỚU 70% nội dung reply (sau khi bỏ whitespace). JSON nhúng giữa
+        // câu giải thích / ví dụ minh họa ("To call the API you write {...}") là văn
+        // xuôi, không được thực thi. Format A-D/antml có marker protocol riêng nên
+        // không chịu rule này (prose + call ở cuối là luồng chính danh).
+        const totalNonWs = text.replace(/\s/g, '').length;
+        const matchedNonWs = matches.join('').replace(/\s/g, '').length;
+        if (totalNonWs > 0 && matchedNonWs / totalNonWs < 0.7) {
+          return calls.length ? calls : null;
+        }
         for (const block of matches) {
           const extracted = parseBareJsonToolBlock(block);
           if (extracted && extracted.name) {

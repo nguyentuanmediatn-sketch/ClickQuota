@@ -58,12 +58,14 @@ test('Standalone with loopback mock upstream', async t => {
     assert.equal((await fetch(base + '/v1/models')).status, 401);
     const r = await fetch(base + '/v1/models', { headers: { authorization: 'Bearer test-key' } });
     assert.ok((await r.json()).data.every(m => m.owned_by === 'clickup'));
-    assert.equal((await request('/v1/responses', message)).status, 404);
+    assert.equal((await request('/v1/not-supported', message)).status, 404);
   });
   await t.test('validation and missing configuration', async () => {
     clickupPool.initFromConfig({});
     assert.equal((await request('/v1/messages', message)).status, 503);
     assert.equal((await request('/v1/messages', {})).status, 400);
+    assert.equal((await request('/v1/responses', { model: 'gpt-6-luna-CL', input: 'Hello' })).status, 503);
+    assert.equal((await request('/v1/responses', {})).status, 400);
     const r = await fetch(base + '/v1/messages', { method: 'POST', headers: { 'x-api-key': 'test-key' }, body: '{' });
     assert.equal(r.status, 400);
   });
@@ -89,6 +91,50 @@ test('Standalone with loopback mock upstream', async t => {
       assert.match(text, route.includes('messages') ? /message_stop/ : /\[DONE\]/);
     });
   }
+  await t.test('/v1/responses JSON response', async () => {
+    reset();
+    const r = await request('/v1/responses', {
+      model: 'gpt-6-luna-CL',
+      instructions: [{ type: 'input_text', text: 'Be concise.' }],
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hello' }] }],
+      max_output_tokens: 128,
+    });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.object, 'response');
+    assert.equal(body.status, 'completed');
+    assert.equal(body.output[0].content[0].text, 'Hello from mock');
+    assert.equal(calls[0].variables.input.maxTokens, 128);
+    assert.match(calls[0].variables.input.messages.at(-1).content, /Hello/);
+  });
+  await t.test('/v1/responses SSE tools', async () => {
+    reset(); mode = 'tool';
+    const r = await request('/v1/responses', {
+      model: 'gpt-6-luna-CL',
+      stream: true,
+      input: 'Read the README.',
+      tools: [{ type: 'function', name: 'Read', parameters: { type: 'object', properties: { file_path: { type: 'string' } } } }],
+    });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type'), /text\/event-stream/);
+    const text = await r.text();
+    assert.match(text, /event: response\.created/);
+    assert.match(text, /event: response\.function_call_arguments\.delta/);
+    assert.match(text, /event: response\.output_item\.done/);
+    assert.match(text, /event: response\.completed/);
+    assert.doesNotMatch(text, /chat\.completion\.chunk/);
+  });
+  await t.test('Anthropic system content blocks are normalized', async () => {
+    reset();
+    const r = await request('/v1/messages', {
+      model: 'gpt-6-luna-CL',
+      max_tokens: 128,
+      system: [{ type: 'text', text: 'Answer concisely.' }],
+      messages: [{ role: 'user', content: 'Hello' }],
+    });
+    assert.equal(r.status, 200);
+    assert.match(calls[0].variables.input.messages[0].content, /Answer concisely/);
+  });
   await t.test('quota failover to configured workspace', async () => {
     reset(['one', 'two']); mode = 'quota';
     assert.equal((await request('/v1/chat/completions', message)).status, 200);

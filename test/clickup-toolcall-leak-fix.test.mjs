@@ -32,7 +32,12 @@ test('ClickUp tool call leak fix: parses multiple tool calls in single turn', ()
 
 [Tool Call: Write({"file_path":"C:\\Users\\hacke\\Documents\\Codex\\2026-10-13\\nghi\\outputs\\skyedu-classroom\\docker-compose.yml","content":"# Docker Compose\\nservices:\\n  redis:\\n    image: redis:7-alpine\\n"})]`;
 
-  const parsed = parseToolCallsFromText(sample);
+  // SAFETY 2026-10-28: parse bây giờ yêu cầu catalog tool từ client (không parse khi
+  // client khai báo 0 tool) — test truyền catalog như một request thật.
+  const parseCatalog = [
+    { name: 'Write', description: 'Write file', input_schema: { type: 'object', properties: { file_path: { type: 'string' }, content: { type: 'string' } } } },
+  ];
+  const parsed = parseToolCallsFromText(sample, parseCatalog);
   assert.ok(parsed);
   assert.equal(parsed.text, 'Em tạo cấu hình Egress và cập nhật docker-compose.yml thêm Redis và Egress.');
   assert.ok(Array.isArray(parsed.calls));
@@ -62,7 +67,7 @@ test('ClickUp tool call leak fix: cleanly strips markdown code fences wrapping [
   const pre2 = extractPreToolText(sample2);
   assert.equal(pre2, '', 'Must be empty when prompt begins with code fence');
 
-  const parsed = parseToolCallsFromText(sample1);
+  const parsed = parseToolCallsFromText(sample1, [{ name: 'Read', parameters: { properties: { filePath: { type: 'string' } } } }]);
   assert.ok(parsed && parsed.calls.length === 1);
   assert.equal(parsed.name, 'Read');
   assert.equal(parsed.text, 'Tôi đọc file cấu hình:');
@@ -86,7 +91,11 @@ Tôi sẽ đọc các file chính để xác nhận kiến trúc và luồng x�
   assert.ok(!pre.includes('<invoke'), 'Pre-tool text must not leak any <invoke> tags');
   assert.ok(pre.includes('Tôi sẽ đọc các file chính'));
 
-  const parsed = parseToolCallsFromText(sample);
+  const readCatalog = [
+    { name: 'Read', parameters: { properties: { filePath: { type: 'string' } } } },
+    { name: 'Write', parameters: { properties: { filePath: { type: 'string' }, content: { type: 'string' } } } },
+  ];
+  const parsed = parseToolCallsFromText(sample, readCatalog);
   assert.ok(parsed && parsed.calls.length === 3);
   assert.equal(parsed.calls[0].name, 'Read');
   assert.equal(parsed.calls[0].arguments.file_path, 'C:\\Users\\hacke\\Desktop\\ClickQuota\\src\\index.mjs');

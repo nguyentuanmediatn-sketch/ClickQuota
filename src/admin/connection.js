@@ -45,7 +45,8 @@
   };
 
   const api = async (url, body) => {
-    const key = sessionStorage.getItem("clickquota-api-key") || currentKeyData.apiKey || "Tuan2005@!@#!@#";
+    // Bảo mật 2026-10-28: không còn fallback mật khẩu master hardcode phía client.
+    const key = sessionStorage.getItem("clickquota-api-key") || "";
     const headers = { "content-type": "application/json" };
     if (key) {
       headers["Authorization"] = "Bearer " + key;
@@ -153,6 +154,7 @@
 
   copyRow("OpenAI base URL", location.origin + "/v1");
   copyRow("Anthropic base URL", location.origin);
+  copyRow("OpenAI Responses endpoint", location.origin + "/v1/responses");
   copyRow("OpenAI endpoint", location.origin + "/v1/chat/completions");
   copyRow("Anthropic endpoint", location.origin + "/v1/messages");
 
@@ -185,6 +187,10 @@
     const model = models.value || "gpt-6-luna-CL";
     const key = currentKeyData.apiKey || sessionStorage.getItem("clickquota-api-key") || "YOUR_KEY";
     example.textContent =
+      "curl '" + location.origin + "/v1/responses' \\\n" +
+      "  -H 'Authorization: Bearer " + key + "' \\\n" +
+      "  -H 'Content-Type: application/json' \\\n" +
+      "  -d '" + JSON.stringify({ model, input: "Hello" }) + "'\n\n" +
       "curl '" + location.origin + "/v1/chat/completions' \\\n" +
       "  -H 'Authorization: Bearer " + key + "' \\\n" +
       "  -H 'Content-Type: application/json' \\\n" +
@@ -533,11 +539,14 @@
 
       // Model mapping
       const modelSpan = el("div", "", detailsRow);
+      // 2026-10-28 (P3): escape mọi field server-data trước khi innerHTML —
+      // server allowlist hiện chặn quote nhưng một regression sanitizer sẽ thành DOM XSS.
+      const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
       if (row.requestedModel || row.resolvedModel) {
-        modelSpan.innerHTML = "Model: <span style=\"color: #c084fc; font-weight: 600;\">" + (row.requestedModel || "default") + "</span>" +
-          (row.resolvedModel ? " ➔ <span style=\"color: #34d399; font-weight: 600;\">" + row.resolvedModel + "</span>" : "");
+        modelSpan.innerHTML = "Model: <span style=\"color: #c084fc; font-weight: 600;\">" + esc(row.requestedModel || "default") + "</span>" +
+          (row.resolvedModel ? " ➔ <span style=\"color: #34d399; font-weight: 600;\">" + esc(row.resolvedModel) + "</span>" : "");
       } else if (row.code) {
-        modelSpan.innerHTML = "Event Code: <span style=\"color: #38bdf8; font-weight: 600;\">" + row.code + "</span>";
+        modelSpan.innerHTML = "Event Code: <span style=\"color: #38bdf8; font-weight: 600;\">" + esc(row.code) + "</span>";
       }
 
       // Expandable JSON accordion
@@ -568,7 +577,13 @@
       }
     } catch (e) {
       if (viewMode === "raw") rawPre.textContent = "Lỗi tải logs: " + e.message;
-      else cardsContainer.innerHTML = "<div style=\"color: #f87171; padding: 12px;\">Lỗi tải logs: " + e.message + "</div>";
+      else cardsContainer.textContent = "";
+      if (viewMode !== "raw") {
+        const errBox = document.createElement("div");
+        errBox.style.cssText = "color: #f87171; padding: 12px;";
+        errBox.textContent = "Lỗi tải logs: " + e.message;
+        cardsContainer.appendChild(errBox);
+      }
     } finally {
       busy = false;
     }
@@ -615,9 +630,10 @@
       // 2. Load active key info if direct local
       try {
         const keyInfo = await api("/admin/api/key");
-        if (keyInfo.ok && keyInfo.apiKey) {
+        if (keyInfo.ok) {
           currentKeyData = keyInfo;
-          sessionStorage.setItem("clickquota-api-key", keyInfo.apiKey);
+          // GET không trả plaintext key nữa — chỉ hiển thị masked.
+          // Operator dán key của mình vào ô nhập (Forget session key → nhập lại).
         }
       } catch {}
 

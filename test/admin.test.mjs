@@ -4,8 +4,6 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { createServer } from '../src/server.mjs';
-import { clickupPool } from '../src/clickup-pool.mjs';
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -28,6 +26,20 @@ function makeMockJwt(workspaceId = '12345678', expOffsetHours = 48) {
 }
 
 test('Admin UI and ClickUp API endpoints', async (t) => {
+  // 2026-10-28 (P2): import pool SAU khi trỏ CLICKUP_API_BASE/ID_BASE về loopback mock
+  // để cron audit 3s sau import và verify bad-account không bắn ra ClickUp thật.
+  const mockOrigin = 'http://127.0.0.1:9'; // port 9 (discard) — mọi request fail nhanh, offline-safe
+  process.env.CLICKUP_API_BASE = mockOrigin;
+  process.env.CLICKUP_ID_BASE = mockOrigin;
+  t.after(() => {
+    delete process.env.CLICKUP_API_BASE;
+    delete process.env.CLICKUP_ID_BASE;
+  });
+
+  const sourceURL = (name) => pathToFileURL(path.join('src', name)).href;
+  const { clickupPool } = await import(sourceURL('clickup-pool.mjs'));
+  const { createServer } = await import(sourceURL('server.mjs'));
+
   // Prevent disk mutation of .state during tests
   clickupPool.onPersist = null;
   clickupPool.initFromConfig({ workspaces: [], accounts: [] });

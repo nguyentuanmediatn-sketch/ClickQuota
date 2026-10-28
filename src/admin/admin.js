@@ -1,15 +1,11 @@
 // ClickQuota Admin Dashboard JavaScript Client (New-API & Sharkpool Standard)
 const $ = (id) => document.getElementById(id);
 
-const MASTER_ADMIN_PASSWORD = 'Tuan2005@!@#!@#';
-
-// Luôn bảo đảm phiên Master Admin Token trong sessionStorage
-if (!sessionStorage.getItem('clickquota-api-key')) {
-  sessionStorage.setItem('clickquota-api-key', MASTER_ADMIN_PASSWORD);
-}
-
+// Bảo mật 2026-10-28: KHÔNG còn mật khẩu master hardcode phía client.
+// Xác thực admin dùng gateway API key (operator nhập một lần vào sessionStorage)
+// hoặc CLICKQUOTA_MASTER_PASSWORD đặt qua biến môi trường server (nhập tay khi được hỏi).
 function authHeaders() {
-  const token = sessionStorage.getItem('clickquota-api-key') || MASTER_ADMIN_PASSWORD;
+  const token = sessionStorage.getItem('clickquota-api-key') || '';
   return {
     'content-type': 'application/json',
     'Authorization': 'Bearer ' + token,
@@ -23,8 +19,11 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// 2026-10-28 (P2 verify fix): JSON.stringify một mình KHÔNG an toàn trong attribute
+// double-quoted — dấu " trong value đóng attribute sớm (HTML không hiểu \").
+// Phải escapeHtml SAU stringify: &quot; round-trip về " khi JS parse attribute.
 function jsStr(value) {
-  return JSON.stringify(value ?? '');
+  return escapeHtml(JSON.stringify(value ?? ''));
 }
 
 // ── Navigation & Sidebar Tab Switcher ──────────────────────────────
@@ -61,8 +60,8 @@ window.switchTab = function(tabName) {
 };
 
 window.resetAdminAuth = function() {
-  const curr = sessionStorage.getItem('clickquota-api-key') || MASTER_ADMIN_PASSWORD;
-  const entered = prompt('Nhập mã khóa Master Admin Token (mặc định: Tuan2005@!@#!@#):', curr);
+  const curr = sessionStorage.getItem('clickquota-api-key') || '';
+  const entered = prompt('Nhập API key quản trị (hoặc CLICKQUOTA_MASTER_PASSWORD nếu server cấu hình):', curr);
   if (entered && entered.trim()) {
     sessionStorage.setItem('clickquota-api-key', entered.trim());
     alert('Đã cập nhật mã khóa Admin thành công!');
@@ -111,15 +110,17 @@ function renderKeysTable(keys) {
     const usageStr = k.requestLimit ? `${k.requestsCount || 0} / ${k.requestLimit}` : `${k.requestsCount || 0} / ∞`;
     const tokenStr = k.tokenLimit ? `${k.tokensUsed || 0} / ${k.tokenLimit}` : `${k.tokensUsed || 0} / ∞`;
     const timeStr = k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '--';
-    const maskedKey = k.key ? (k.key.slice(0, 7) + '••••••••' + k.key.slice(-4)) : '••••';
+    const maskedKey = k.masked || '••••••••';
+    const idArg = jsStr(k.id);
+    const labelArg = jsStr(k.label || '');
 
     return `
       <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05); transition: background 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.02)'" onmouseout="this.style.background='transparent'">
         <td style="padding: 12px 14px; font-weight: 600; color: #fff;">${escapeHtml(k.label || 'Gateway Key')}</td>
         <td style="padding: 12px 14px;">
           <div style="display: flex; align-items: center; gap: 6px;">
-            <code class="key-mono" id="key-text-${k.id}">${maskedKey}</code>
-            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="copyKeyToClipboard('${k.key}', this)" title="Copy Key">📋 Copy</button>
+            <code class="key-mono" id="key-text-${escapeHtml(k.id)}">${escapeHtml(maskedKey)}</code>
+            <span style="font-size: 10px; color: var(--text-muted);" title="Plaintext key chỉ hiển thị một lần duy nhất ngay sau khi tạo">masked</span>
           </div>
         </td>
         <td style="padding: 12px 14px;">${roleBadge}</td>
@@ -129,10 +130,10 @@ function renderKeysTable(keys) {
         <td style="padding: 12px 14px; color: var(--text-muted);">${timeStr}</td>
         <td style="padding: 12px 14px; text-align: right;">
           <div style="display: inline-flex; gap: 6px;">
-            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; ${isAct ? 'color: #fbbf24;' : 'color: #34d399;'}" onclick="toggleSharkpoolKey('${k.id}', ${!isAct})">
+            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; ${isAct ? 'color: #fbbf24;' : 'color: #34d399;'}" onclick="toggleSharkpoolKey(${idArg}, ${!isAct})">
               ${isAct ? 'Tắt' : 'Bật'}
             </button>
-            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #f87171;" onclick="deleteSharkpoolKey('${k.id}', '${escapeHtml(k.label || '')}')">
+            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #f87171;" onclick="deleteSharkpoolKey(${idArg}, ${labelArg})">
               Xóa
             </button>
           </div>
@@ -152,9 +153,9 @@ function updateKeysKPI(keys) {
   if ($('dash-total-requests-count')) $('dash-total-requests-count').textContent = totalRequests;
   if ($('dash-total-tokens-count')) $('dash-total-tokens-count').textContent = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens;
 
-  const activeKey = keys.find(k => k.active !== false && k.key);
-  const keyToUse = activeKey ? activeKey.key : (sessionStorage.getItem('clickquota-api-key') || MASTER_ADMIN_PASSWORD);
-  const curlCode = `curl http://127.0.0.1:4310/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${keyToUse}" \\\n  -d '{"model": "gpt-6.1-sol-CL", "messages": [{"role": "user", "content": "Xin chào ClickQuota!"}]}'`;
+  const sessionKey = sessionStorage.getItem('clickquota-api-key') || '';
+  const keyToUse = sessionKey ? sessionKey : '<DÁN-API-KEY-QUẢN-TRỊ-CỦA-BẠN>';
+  const curlCode = `curl http://127.0.0.1:4310/v1/responses \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${keyToUse}" \\\n  -d '{"model": "gpt-6.1-sol-CL", "input": "Xin chào ClickQuota!"}'`;
   if ($('curl-example-code')) $('curl-example-code').textContent = curlCode;
 }
 
@@ -278,7 +279,7 @@ window.loadClickUpHub = async function(refresh = false) {
     });
 
     if (res.status === 401 || res.status === 403) {
-      const key = prompt('Vui lòng nhập API Key quản trị (Mặc định: Tuan2005@!@#!@#):', MASTER_ADMIN_PASSWORD);
+      const key = prompt('Vui lòng nhập API Key quản trị (gateway key hoặc CLICKQUOTA_MASTER_PASSWORD):', sessionStorage.getItem('clickquota-api-key') || '');
       if (key) {
         sessionStorage.setItem('clickquota-api-key', key.trim());
         return window.loadClickUpHub(refresh);
@@ -320,7 +321,7 @@ window.loadClickUpHub = async function(refresh = false) {
       if ($('clickup-stat-quota-daily-sub')) $('clickup-stat-quota-daily-sub').textContent = `Chưa kiểm tra (Bấm [Kiểm tra sức khỏe])`;
     } else {
       if ($('clickup-stat-quota-daily')) $('clickup-stat-quota-daily').textContent = `${dailyLeft.toLocaleString()} tokens`;
-      if ($('clickup-stat-quota-daily-sub')) $('clickup-stat-quota-daily-sub').textContent = `Dùng: ${dailyUsage.toLocaleString()} / ${dailyLimit.toLocaleString()} • Reset 14:00`;
+      if ($('clickup-stat-quota-daily-sub')) $('clickup-stat-quota-daily-sub').textContent = `Dùng: ${dailyUsage.toLocaleString()} / ${dailyLimit.toLocaleString()} • Reset 07:00 sáng (giờ VN)`;
     }
 
     // 3. Quota Weekly
@@ -422,9 +423,9 @@ function renderWorkspacesTable(workspaces, accounts) {
         <td style="padding: 10px 12px;">${statusBadge}</td>
         <td style="padding: 10px 12px; text-align: right;">
           <div style="display: inline-flex; gap: 6px;">
-            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="renewWs('${ws.id}')" title="Gia hạn Session">🔄</button>
-            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="toggleWs('${ws.id}', ${!ws.enabled})">${ws.enabled ? 'Tắt' : 'Bật'}</button>
-            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #f87171;" onclick="deleteWs('${ws.id}')">Xóa</button>
+            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="renewWs(${jsStr(ws.id)})" title="Gia hạn Session">🔄</button>
+            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="toggleWs(${jsStr(ws.id)}, ${!ws.enabled})">${ws.enabled ? 'Tắt' : 'Bật'}</button>
+            <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #f87171;" onclick="deleteWs(${jsStr(ws.id)})">Xóa</button>
           </div>
         </td>
       </tr>
@@ -454,9 +455,9 @@ function renderAccountsTable(accounts, workspaces) {
         <td style="padding: 10px 12px;">${acc.enabled !== false ? '<span class="badge badge-healthy">Hoạt động</span>' : '<span class="badge badge-danger">Khóa</span>'}</td>
         <td style="padding: 10px 12px; text-align: right;">
           <div style="display: inline-flex; gap: 6px;">
-            <button class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #a78bfa;" onclick="testAccountCookie('${acc.id}', '${escapeHtml(acc.email || '')}')">🔍 Test</button>
-            <button class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #34d399;" onclick="recreateSingleAccount('${acc.id}', '${escapeHtml(acc.email || '')}')">⚡ Recreate</button>
-            <button class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #f87171;" onclick="deleteAccount('${acc.id}')">Xóa</button>
+            <button class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #a78bfa;" onclick="testAccountCookie(${jsStr(acc.id)}, ${jsStr(acc.email || '')})">🔍 Test</button>
+            <button class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #34d399;" onclick="recreateSingleAccount(${jsStr(acc.id)}, ${jsStr(acc.email || '')})">⚡ Recreate</button>
+            <button class="btn-ghost" style="padding: 3px 8px; font-size: 11px; color: #f87171;" onclick="deleteAccount(${jsStr(acc.id)})">Xóa</button>
           </div>
         </td>
       </tr>
@@ -871,7 +872,7 @@ function renderLogs() {
         const protoBadge = r.protocol === 'anthropic'
           ? `<span class="badge" style="background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.3);">Anthropic</span>`
           : `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3);">OpenAI</span>`;
-        const shortId = (r.requestId || '').slice(0, 8);
+                const shortId = escapeHtml((r.requestId || '').slice(0, 8));
 
         return `
           <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;">
@@ -879,10 +880,10 @@ function renderLogs() {
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <span style="font-family: monospace; font-size: 11px; color: var(--text-muted); font-weight: 600;">${timeStr}</span>
                 ${statusBadge}
-                <span style="font-weight: 700; font-size: 11px; color: #fff;">${r.method || 'POST'}</span>
-                <code style="font-family: monospace; font-size: 11px; color: #38bdf8;">${r.path || ''}</code>
+                <span style="font-weight: 700; font-size: 11px; color: #fff;">${escapeHtml(r.method || 'POST')}</span>
+                <code style="font-family: monospace; font-size: 11px; color: #38bdf8;">${escapeHtml(r.path || '')}</code>
                 ${protoBadge}
-                <span style="font-size: 11px; color: #a78bfa; font-weight: 600;">${r.requestedModel || ''}</span>
+                <span style="font-size: 11px; color: #a78bfa; font-weight: 600;">${escapeHtml(r.requestedModel || '')}</span>
               </div>
               <div style="display: flex; align-items: center; gap: 12px;">
                 <span style="font-size: 11px; color: #fbbf24; font-weight: 600;">⚡ ${r.durationMs || 0}ms</span>
@@ -922,14 +923,14 @@ function renderLogs() {
         return `
           <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
             <td style="padding: 10px 12px; font-family: monospace; color: var(--text-muted);">${timeStr}</td>
-            <td style="padding: 10px 12px;"><strong>${r.method || 'POST'}</strong> <code style="color: #38bdf8;">${r.path || ''}</code></td>
-            <td style="padding: 10px 12px; color: #a78bfa;">${r.requestedModel || ''}</td>
-            <td style="padding: 10px 12px; color: #34d399;">${r.resolvedModel || '--'}</td>
+            <td style="padding: 10px 12px;"><strong>${escapeHtml(r.method || 'POST')}</strong> <code style="color: #38bdf8;">${escapeHtml(r.path || '')}</code></td>
+            <td style="padding: 10px 12px; color: #a78bfa;">${escapeHtml(r.requestedModel || '')}</td>
+            <td style="padding: 10px 12px; color: #34d399;">${escapeHtml(r.resolvedModel || '--')}</td>
             <td style="padding: 10px 12px; color: #fbbf24; font-weight: 600;">⚡ ${r.durationMs || 0}ms</td>
             <td style="padding: 10px 12px; color: #c084fc;">${r.inputTokens || 0} / ${r.outputTokens || 0}</td>
             <td style="padding: 10px 12px;">${statusBadge}</td>
             <td style="padding: 10px 12px; text-align: right;">
-              <button type="button" class="btn-ghost" style="padding: 2px 6px; font-size: 10px;" onclick="alert('Request ID: ' + '${r.requestId || ''}')">ID</button>
+                <button type="button" class="btn-ghost" style="padding: 2px 6px; font-size: 10px;" onclick="alert('Request ID: ' + ${jsStr(r.requestId || '')})">ID</button>
             </td>
           </tr>
         `;

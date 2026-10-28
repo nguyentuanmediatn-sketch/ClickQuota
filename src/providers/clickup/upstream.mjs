@@ -7,6 +7,13 @@ import { detectIDE } from '../../ide-detect.mjs';
 import { extractTextToolCalls } from '../../tools/text-fallback.mjs';
 import { estimateTokens } from '../../tokens.mjs';
 import {
+  buildResponsesOutput,
+  buildResponsesResponse,
+  buildResponsesUsage,
+  createResponsesContext,
+  rememberResponsesConversation,
+} from '../../protocols/openai-responses.mjs';
+import {
   buildClickUpToolPromptCard,
   createClickUpToolMapper,
   extractPreToolText,
@@ -152,15 +159,17 @@ export function resolveClickUpModel(reqModel) {
 function serializeMessageContent(msg) {
   if (!msg) return '';
   const content = msg.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
+  let serialized = '';
+  if (typeof content === 'string') {
+    serialized = content;
+  } else if (Array.isArray(content)) {
+    serialized = content
       .map((part) => {
         if (!part) return '';
         if (typeof part === 'string') return part;
-        if (part.type === 'text') return part.text || '';
+        if (['text', 'input_text', 'output_text', 'refusal'].includes(part.type)) return part.text || part.refusal || '';
         if (part.type === 'tool_use') {
-          return `\n<tool_call>{"name": "${part.name}", "arguments": ${JSON.stringify(part.input || {})}}</tool_call>\n`;
+          return `\n<tool_call id="${part.id || ''}">{"name": "${part.name}", "arguments": ${JSON.stringify(part.input || {})}}</tool_call>\n`;
         }
         if (part.type === 'tool_result') {
           const resText = typeof part.content === 'string' ? part.content : JSON.stringify(part.content || '');
@@ -184,8 +193,29 @@ function serializeMessageContent(msg) {
       })
       .filter(Boolean)
       .join('\n');
+  } else {
+    // 2026-10-28 (P2): content dạng object (vd rawBody.system object của Anthropic)
+    // phải được serialize thành JSON, không phải '[object Object]'.
+    serialized = typeof content === 'object' && content !== null ? JSON.stringify(content) : String(content || '');
   }
-  return String(content || '');
+
+  if ((msg.role === 'tool' || msg.role === 'function') && serialized) {
+    return `\n<tool_result id="${msg.tool_call_id || msg.name || ''}">${serialized}</tool_result>\n`;
+  }
+
+  const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  const functionCall = msg.function_call ? [msg.function_call] : [];
+  const serializedCalls = [...toolCalls, ...functionCall]
+    .map((call) => {
+      const fn = call?.function || call;
+      if (!fn?.name) return '';
+      const args = typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments || {});
+      return `\n<tool_call id="${call?.id || ''}">{"name": "${fn.name}", "arguments": ${args}}</tool_call>\n`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  return [serialized, serializedCalls].filter(Boolean).join('\n');
 }
 
 export function messagesToPrompt(messages, maxChars = 200000) {
@@ -251,7 +281,12 @@ export function cleanTruncateMessage(content, maxLen = 45000) {
   if (content.includes('<system-reminder>')) {
     const lastNewline = content.lastIndexOf('\n', maxLen - 120);
     const cutPos = lastNewline > 1000 ? lastNewline : maxLen - 120;
-    return content.slice(0, cutPos) + '\n\n...[skills catalog truncated for context efficiency]\n</system-reminder>';
+    // 2026-10-28 (P3): chỉ đóng tag khi opener nằm TRƯỚC điểm cắt — nếu
+    // <system-reminder> xuất hiện sau cutPos thì thêm </system-reminder>
+    // tạo tag đóng mồ côi (và slice có thể cắt đôi surrogate pair).
+    const openerPos = content.indexOf('<system-reminder>');
+    const suffix = openerPos >= 0 && openerPos < cutPos ? '\n\n...[skills catalog truncated for context efficiency]\n</system-reminder>' : '\n\n...[content truncated for brevity]';
+    return content.slice(0, cutPos) + suffix;
   }
   const lastNewline = content.lastIndexOf('\n', maxLen - 80);
   const cutPos = lastNewline > 1000 ? lastNewline : maxLen - 80;
@@ -277,8 +312,10 @@ export function resolveActiveUserIntent(rawMessages, fallbackContent = 'Hello') 
   const lastText = lastUserMsg ? serializeMessageContent(lastUserMsg).trim() : fallbackContent;
 
   const isConfirmation =
-    /^(?:đúng rồi|đúng|đúng v|chuẩn|chuẩn rồi|chính xác|ok|okie|oke|tiếp tục|làm đi|làm tiếp|triển khai đi|yes|yep|sure|go ahead|proceed|y)[.!]?$/i.test(lastText) ||
-    (lastText.length <= 20 && /^(?:đúng|ok|tiếp|làm|triển khai)/i.test(lastText));
+    // 2026-10-28 (P3): chỉ nhận xác nhận EXACT — bỏ heuristic prefix ("/^(?:đúng|ok|tiếp|làm...)/
+    // với text ≤20 ký tự) vì "ok cancel that" hay "làm lại từ đầu đi" (mệnh lệnh MỚI) từng bị
+    // rewrite thành continuation của yêu cầu cũ, làm sai lệch ý người dùng.
+    /^(?:đúng rồi|đúng|đúng v|chuẩn|chuẩn rồi|chính xác|ok|okie|oke|tiếp tục|làm đi|làm tiếp|triển khai đi|yes|yep|sure|go ahead|proceed|y)[.!]?$/i.test(lastText);
 
   let effectiveContent = lastText;
   if (isConfirmation && userMsgs.length >= 2) {
@@ -345,6 +382,10 @@ export function sanitizeMessagesForUpstream(messages, fallbackPrompt, toolsPromp
 
 export function parseToolCallsFromText(text, availableTools = [], ideType = 'unknown') {
   if (!text || typeof text !== "string") return null;
+  // SAFETY 2026-10-28: client không khai báo tool nào → không tồn tại tool để gọi.
+  // Mọi JSON/XML tool-call nhúng trong văn bản lúc này chỉ là ví dụ minh họa hoặc
+  // prompt-injection; tuyệt đối không extract thành call thật và không cắt reply.
+  if (!Array.isArray(availableTools) || availableTools.length === 0) return null;
 
   // 1. Thử extractTextToolCalls đa định dạng (XML, antml, Cline tags, JSON envelopes, bracket calls)
   const extracted = extractTextToolCalls(text);
@@ -482,7 +523,15 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
       }
 
       lastResult = res;
-      const preview = JSON.stringify(res.parsed?.data?.aiRequest || res.parsed || {}).slice(0, 200);
+      const safeLen = (v) => {
+        if (v == null) return 0;
+        if (typeof v === 'string' || Array.isArray(v)) return v.length;
+        try { return JSON.stringify(v).length; } catch { return -1; }
+      };
+      // 2026-10-28 (P3): chỉ log shape (tên field + kiểu + độ dài), không log nội dung.
+      const preview = Object.entries(res.parsed?.data?.aiRequest || res.parsed || {})
+        .map(([k, v]) => `${k}:${typeof v}(${safeLen(v)})`)
+        .join(',');
       console.warn(`[ClickUpUpstream] Model ${candidate} trả về completion rỗng (${preview}). Đang nén ngữ cảnh và thử model thay thế...`);
 
       // Tự thu gọn lịch sử cho ỨNG VIÊN TIẾP THEO trên bản sao payload cục bộ
@@ -601,6 +650,9 @@ export async function executePooledUpstream({ payload, headers = {}, workspaceId
           (upstreamRes) => {
             const chunks = [];
             upstreamRes.on('data', (c) => chunks.push(c));
+            // 2026-10-28: thiếu error handler khiến response upstream hỏng giữa chừng
+            // (content-length lệch, premature close) → unhandled 'error' → crash process.
+            upstreamRes.on('error', reject);
             upstreamRes.on('end', () => {
               resolve({
                 status: upstreamRes.statusCode ?? 502,
@@ -748,10 +800,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
   const isChatRoute = route.includes('/chat/completions') || rawBody?.protocol === 'openai' || rawBody?.isChat;
   const isResponsesRoute = route.includes('/responses') || rawBody?.isResponses;
   const wantsStream = Boolean(rawBody?.stream);
+  const responsesContext = isResponsesRoute ? createResponsesContext(requestId) : null;
 
   let rawMessages = Array.isArray(rawBody?.messages) ? rawBody.messages : [];
   if (rawBody?.system && Array.isArray(rawMessages) && !rawMessages.some((m) => m.role === 'system')) {
-    const sysContent = typeof rawBody.system === 'string' ? rawBody.system : JSON.stringify(rawBody.system);
+    const sysContent = serializeMessageContent({ content: rawBody.system });
     rawMessages.unshift({ role: 'system', content: sysContent });
   }
 
@@ -843,6 +896,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
     };
 
+    let responseSequence = 0;
+    const writeResponseEvent = (type, data = {}) => {
+      writeSse(type, { type, sequence_number: responseSequence++, ...data });
+    };
+
     // Immediate keep-alive
     res.write(': keep-alive\n\n');
 
@@ -863,8 +921,16 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
     res.on('close', cleanup);
 
     try {
-      if (isChatRoute || isResponsesRoute) {
-        // Send initial chunk
+      if (isResponsesRoute) {
+        const response = buildResponsesResponse({
+          context: responsesContext,
+          rawBody,
+          model: requestedModel || resolvedModel,
+          status: 'in_progress',
+        });
+        writeResponseEvent('response.created', { response });
+        writeResponseEvent('response.in_progress', { response });
+      } else if (isChatRoute) {
         writeSse(null, {
           id: `chatcmpl-${requestId}`,
           object: 'chat.completion.chunk',
@@ -890,6 +956,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         // Content block start deferred to actual stream delivery
       }
 
+      const upstreamStartedAt = performance.now();
       let upstreamResult = await executeClickUpWithFallback({
         payload,
         workspaceId: requestedWs,
@@ -897,6 +964,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         signal,
         initialModel: resolvedModel,
       });
+      // 2026-10-28 (P3): đo TTFT thật (thời gian chờ upstream lần đầu), không còn
+      // field chết trong request log.
+      if (diagnostics && diagnostics.ttftMs === undefined) {
+        diagnostics.ttftMs = Math.round(performance.now() - upstreamStartedAt);
+      }
       if (diagnostics) diagnostics.workspaceId = upstreamResult.workspace?.workspaceId || upstreamResult.workspace?.id || null;
 
       let actualModel = upstreamResult.usedModel || resolvedModel;
@@ -933,7 +1005,93 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       const chunkSize = totalLen > 8000 ? 64 : (totalLen > 3000 ? 40 : 20);
       const delayMs = Math.max(5, Math.min(18, Math.floor(1000 / Math.max(1, totalLen / chunkSize))));
 
-      if (isChatRoute || isResponsesRoute) {
+      if (isResponsesRoute) {
+        const responseText = toolCalls.length > 0 ? (preText || '') : (replyContent || replyText || '');
+        const output = buildResponsesOutput({
+          context: responsesContext,
+          text: responseText,
+          toolCalls,
+        });
+
+        for (let outputIndex = 0; outputIndex < output.length; outputIndex++) {
+          if (res.writableEnded || signal?.aborted) break;
+          const item = output[outputIndex];
+          if (item.type === 'message') {
+            const part = item.content[0];
+            writeResponseEvent('response.output_item.added', {
+              output_index: outputIndex,
+              item: { ...item, status: 'in_progress', content: [] },
+            });
+            writeResponseEvent('response.content_part.added', {
+              item_id: item.id,
+              output_index: outputIndex,
+              content_index: 0,
+              part: { ...part, text: '' },
+            });
+            for (let i = 0; i < part.text.length; i += chunkSize) {
+              if (res.writableEnded || signal?.aborted) break;
+              writeResponseEvent('response.output_text.delta', {
+                item_id: item.id,
+                output_index: outputIndex,
+                content_index: 0,
+                delta: part.text.slice(i, i + chunkSize),
+                logprobs: [],
+              });
+              await sleep(delayMs);
+            }
+            writeResponseEvent('response.output_text.done', {
+              item_id: item.id,
+              output_index: outputIndex,
+              content_index: 0,
+              text: part.text,
+              logprobs: [],
+            });
+            writeResponseEvent('response.content_part.done', {
+              item_id: item.id,
+              output_index: outputIndex,
+              content_index: 0,
+              part,
+            });
+          } else if (item.type === 'function_call') {
+            writeResponseEvent('response.output_item.added', {
+              output_index: outputIndex,
+              item: { ...item, status: 'in_progress', arguments: '' },
+            });
+            const argumentChunkSize = 128;
+            for (let i = 0; i < item.arguments.length; i += argumentChunkSize) {
+              if (res.writableEnded || signal?.aborted) break;
+              writeResponseEvent('response.function_call_arguments.delta', {
+                item_id: item.id,
+                output_index: outputIndex,
+                delta: item.arguments.slice(i, i + argumentChunkSize),
+              });
+            }
+            writeResponseEvent('response.function_call_arguments.done', {
+              item_id: item.id,
+              output_index: outputIndex,
+              arguments: item.arguments,
+            });
+          }
+          writeResponseEvent('response.output_item.done', { output_index: outputIndex, item });
+        }
+
+        if (!res.writableEnded) {
+          rememberResponsesConversation({
+            responseId: responsesContext.responseId,
+            messages: rawMessages,
+            output,
+          });
+          const response = buildResponsesResponse({
+            context: responsesContext,
+            rawBody,
+            model: requestedModel || resolvedModel,
+            output,
+            usage: buildResponsesUsage(diagnostics?.inputTokens, diagnostics?.outputTokens),
+          });
+          writeResponseEvent('response.completed', { response });
+          res.end();
+        }
+      } else if (isChatRoute) {
         // 1. Stream reasoning if present
         if (replyThinking) {
           for (let i = 0; i < replyThinking.length; i += chunkSize) {
@@ -996,6 +1154,20 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
               created: Math.floor(Date.now() / 1000),
               model: requestedModel || resolvedModel,
               choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            });
+          }
+          if (rawBody?.stream_options?.include_usage) {
+            writeSse(null, {
+              id: `chatcmpl-${requestId}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: requestedModel || resolvedModel,
+              choices: [],
+              usage: {
+                prompt_tokens: diagnostics?.inputTokens || 0,
+                completion_tokens: diagnostics?.outputTokens || 0,
+                total_tokens: (diagnostics?.inputTokens || 0) + (diagnostics?.outputTokens || 0),
+              },
             });
           }
           writeSse(null, '[DONE]');
@@ -1067,7 +1239,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
                 index: currentBlockIndex,
                 content_block: { type: 'tool_use', id: toolId, name: tc.name, input: {} },
               });
-              const rawJson = typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input);
+              const rawJson = typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {});
               const jsonChunkSize = 128;
               if (rawJson.length > jsonChunkSize) {
                 for (let j = 0; j < rawJson.length; j += jsonChunkSize) {
@@ -1122,7 +1294,21 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         const quotaLike = err?.quotaExhausted === true ||
           (err?.code !== 'POOL_EXHAUSTED' && /quota|fairuse/i.test(err.message || ''));
         const { message, retryAfterSeconds } = buildNeutralUpstreamError(err, requestId);
-        if (isChatRoute || isResponsesRoute) {
+        if (isResponsesRoute) {
+          const error = {
+            code: 'upstream_unavailable',
+            message,
+            param: null,
+          };
+          const response = buildResponsesResponse({
+            context: responsesContext,
+            rawBody,
+            model: requestedModel || resolvedModel,
+            status: 'failed',
+            error,
+          });
+          writeResponseEvent('response.failed', { response });
+        } else if (isChatRoute) {
           writeSse(null, {
             error: {
               message,
@@ -1145,6 +1331,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
   } else {
     // Non-streaming response
     try {
+      const upstreamStartedAt = performance.now();
       let upstreamResult = await executeClickUpWithFallback({
         payload,
         workspaceId: requestedWs,
@@ -1152,6 +1339,11 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         signal,
         initialModel: resolvedModel,
       });
+      // 2026-10-28 (P3): đo TTFT thật (thời gian chờ upstream lần đầu), không còn
+      // field chết trong request log.
+      if (diagnostics && diagnostics.ttftMs === undefined) {
+        diagnostics.ttftMs = Math.round(performance.now() - upstreamStartedAt);
+      }
       if (diagnostics) diagnostics.workspaceId = upstreamResult.workspace?.workspaceId || upstreamResult.workspace?.id || null;
 
       let actualModel = upstreamResult.usedModel || resolvedModel;
@@ -1180,10 +1372,31 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.setHeader('x-proxy-upstream-provider', 'clickup');
       res.setHeader('x-proxy-upstream-model', actualModel);
-      if (upstreamResult.workspace) {
-        res.setHeader('x-proxy-workspace', upstreamResult.workspace.label);
-      }
-      if (isChatRoute || isResponsesRoute) {
+      // 2026-10-28 (P3): bỏ x-proxy-workspace — header rò rỉ label workspace nội bộ
+      // ra mọi client (label chứa workspaceId thật). Nếu cần debug, xem request log.
+      if (isResponsesRoute) {
+        const { content: responseContent } = splitThinkingAndContent(replyText);
+        const responseText = toolCalls.length > 0 ? (preText || '') : (responseContent || replyText || '');
+        const output = buildResponsesOutput({
+          context: responsesContext,
+          text: responseText,
+          toolCalls,
+        });
+        const resp = buildResponsesResponse({
+          context: responsesContext,
+          rawBody,
+          model: requestedModel || resolvedModel,
+          output,
+          usage: buildResponsesUsage(promptTokens, completionTokens),
+        });
+        rememberResponsesConversation({
+          responseId: responsesContext.responseId,
+          messages: rawMessages,
+          output,
+        });
+        res.writeHead(200);
+        res.end(JSON.stringify(resp));
+      } else if (isChatRoute) {
         const choice = {
           index: 0,
           message: {
@@ -1198,7 +1411,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
             type: "function",
             function: {
               name: tc.name,
-              arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input)
+              arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {})
             }
           }));
         }
@@ -1207,9 +1420,10 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         res.end(JSON.stringify(resp));
       } else {
         // Check if client expects a JSON title object
-        const isTitleGen = (rawBody?.system && JSON.stringify(rawBody.system).includes('Generate a concise title')) ||
-                           fullPrompt.includes('Generate a concise title') ||
-                           fullPrompt.includes('{"title":');
+        // 2026-10-28 (P3): chỉ sniff trong system prompt. Sniff fullPrompt cũ làm
+        // reply bình thường bị rewrite thành {"title": ...} khi user dán JSON
+        // chứa '{"title":' vào hội thoại.
+        const isTitleGen = Boolean(rawBody?.system && JSON.stringify(rawBody.system).includes('Generate a concise title'));
         let finalReplyText = replyText || '';
         if (isTitleGen) {
           finalReplyText = finalReplyText.replace(/```(?:json)?\s*([\s\S]*?)\s*```/i, '$1').trim();
@@ -1249,8 +1463,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         res.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
           'x-proxy-upstream-provider': 'clickup',
-          'x-proxy-upstream-model': actualModel,
-          ...(upstreamResult.workspace ? { 'x-proxy-workspace': upstreamResult.workspace.label } : {})
+          'x-proxy-upstream-model': actualModel
         });
         res.end(JSON.stringify(resp));
       }
@@ -1261,15 +1474,23 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         (err?.code !== 'POOL_EXHAUSTED' && /quota|fairuse/i.test(err.message || ''));
       const { message: clientMessage, retryAfterSeconds } = buildNeutralUpstreamError(err, requestId);
       res.writeHead(quotaLike ? 429 : 502, { 'content-type': 'application/json; charset=utf-8', ...(retryAfterSeconds ? { 'retry-after': String(retryAfterSeconds) } : {}) });
-      res.end(
-        JSON.stringify({
-          error: {
-            message: clientMessage,
-            type: quotaLike ? 'insufficient_quota' : 'upstream_error',
-            code: 'upstream_unavailable', ...(retryAfterSeconds ? { retry_after_seconds: retryAfterSeconds } : {}),
-          },
-        })
-      );
+      const errorBody = isChatRoute || isResponsesRoute
+        ? {
+            error: {
+              message: clientMessage,
+              type: quotaLike ? 'insufficient_quota' : 'upstream_error',
+              code: 'upstream_unavailable',
+              ...(retryAfterSeconds ? { retry_after_seconds: retryAfterSeconds } : {}),
+            },
+          }
+        : {
+            type: 'error',
+            error: {
+              type: quotaLike ? 'rate_limit_error' : 'api_error',
+              message: clientMessage,
+            },
+          };
+      res.end(JSON.stringify(errorBody));
     }
   }
 }

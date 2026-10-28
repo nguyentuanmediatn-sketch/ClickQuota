@@ -222,6 +222,20 @@ export const IDE_PROFILES = {
     supportsImages: true,
     maxContextTokens: 128000,
   },
+  // 2026-10-28 (P3): pentagi có UA pattern + tool map nhưng thiếu profile —
+  // trước đây luôn degrade về 'unknown' (200k context + thinking mặc định quá mạnh).
+  'pentagi': {
+    transport: 'native',
+    supportsBatch: false,
+    supportsMCP: true,
+    resultFormat: 'anthropic',
+    toolPrefix: '',
+    maxToolNameLength: 64,
+    supportsStreaming: true,
+    supportsThinking: false,
+    supportsImages: false,
+    maxContextTokens: 128000,
+  },
   'unknown': {
     transport: 'native',
     supportsBatch: true,

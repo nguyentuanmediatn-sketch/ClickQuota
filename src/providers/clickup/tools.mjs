@@ -1,7 +1,7 @@
 // src/clickup-tools.mjs
 // Module xử lý Toolcall & MCP thích ứng cho ClickUp Upstream trong SharkPool
 // Bao gồm: Universal Tool Registry mapping, Parameter Healing, IDE Prompt Card, và Idle-Promise Auto-Recovery.
-import { resolveTool, resolveIdealName, normalizeKey } from '../../tools/tool-registry.mjs';
+import { resolveTool, normalizeKey } from '../../tools/tool-registry.mjs';
 import { getIDEAdaptations } from '../../ide-detect.mjs';
 /**
  * Chuẩn hoá và chuyển đổi tên tham số (Parameter Healing) theo schema đích của công cụ
@@ -122,7 +122,15 @@ export function createClickUpToolMapper(ideType = 'unknown', tools = [], cwd = '
       rawName = rawName.replace(/^(?:codex_mcp_server__|mcp__)/i, '');
       try {
         const resolved = resolveTool(rawName, tools, ideType);
-        const targetName = resolved?.name || resolveIdealName(rawName) || rawName;
+        // SAFETY 2026-10-28: tool call chỉ được phát khi tên resolve được tới MỘT tool
+        // có thật trong catalog client (exact/normalize/IDE-map/fuzzy alias).
+        // Không còn fallback `|| resolveIdealName(rawName) || rawName` — trước đây
+        // 'definitelyNotATool' hoặc ví dụ JSON trong văn xuôi đều được phát ra client.
+        if (!resolved) {
+          console.warn(`[ClickUpTools] Bo qua tool call "${rawName}" vi khong ton tai trong tool catalog cua client`);
+          return null;
+        }
+        const targetName = resolved.name;
         let parsedArgs = call.arguments ?? call.function?.arguments ?? call.input ?? {};
         if (typeof parsedArgs === 'string') {
           try {

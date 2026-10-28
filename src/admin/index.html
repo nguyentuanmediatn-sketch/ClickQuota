@@ -62,8 +62,8 @@
       <div class="admin-profile-card">
         <div class="admin-avatar">A</div>
         <div class="admin-info">
-          <div class="admin-name" title="Master Admin">Admin Tuan2005</div>
-          <div class="admin-role">● Đã xác thực Master</div>
+          <div class="admin-name" title="ClickQuota Operator">ClickQuota Operator</div>
+          <div class="admin-role">● Phiên quản trị</div>
         </div>
         <button type="button" class="btn-ghost" style="padding: 4px 6px; font-size: 11px;" onclick="resetAdminAuth()" title="Đổi / Nhập lại mã khóa">🔑</button>
       </div>
@@ -98,7 +98,7 @@
           <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
             <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">QUOTA NGÀY (CLICKUP)</div>
             <div id="clickup-stat-quota-daily" style="font-size: 24px; font-weight: 800; color: #38bdf8;">-- / -- tokens</div>
-            <div id="clickup-stat-quota-daily-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Còn -- tokens • Reset 14:00</div>
+            <div id="clickup-stat-quota-daily-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Còn -- tokens • Reset 07:00 sáng (giờ VN)</div>
           </div>
           <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
             <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">QUOTA TUẦN (CLICKUP)</div>
@@ -179,6 +179,10 @@
               <button type="button" class="btn-ghost" style="padding: 4px 10px; font-size: 11px;" onclick="switchTab('settings')">Xem Chi Tiết ➔</button>
             </div>
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);">
+                <span style="color: var(--text-muted); font-weight: 600;">OpenAI Responses:</span>
+                <code style="color: #22d3ee;">POST /v1/responses</code>
+              </div>
               <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);">
                 <span style="color: var(--text-muted); font-weight: 600;">OpenAI Chat:</span>
                 <code style="color: #38bdf8;">POST /v1/chat/completions</code>
@@ -430,11 +434,11 @@
           </h2>
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 16px;">
             <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">MÃ KHÓA ADMIN CỐ ĐỊNH</div>
-              <div style="font-family: var(--font-mono, monospace); font-size: 16px; font-weight: 700; color: #34d399; margin: 4px 0;">
-                Tuan2005@!@#!@#
+              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">XÁC THỰC QUẢN TRỊ</div>
+              <div style="font-family: var(--font-mono, monospace); font-size: 14px; font-weight: 700; color: #34d399; margin: 4px 0;">
+                Gateway API Key / CLICKQUOTA_MASTER_PASSWORD
               </div>
-              <div style="font-size: 11px; color: var(--text-muted);">Tự động đính kèm vào tất cả các yêu cầu quản trị từ giao diện.</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Mã khóa không còn hiển thị sẵn: operator nhập một lần vào phiên (nút 🔑). Master password (nếu dùng) đặt qua biến môi trường trên server.</div>
             </div>
             <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
               <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">GATEWAY ENDPOINT</div>

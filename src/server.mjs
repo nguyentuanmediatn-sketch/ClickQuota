@@ -7,14 +7,25 @@ import { createTelegramNotifier } from './alert/telegram-notifier.mjs';
 import { clickupPool } from './providers/clickup/pool.mjs';
 import { providerRegistry } from './providers/index.mjs';
 import { CLICKUP_MODELS } from './providers/clickup/upstream.mjs';
-import { listKeys, createKey, toggleKey, deleteKey, isKeyAuthorized, recordKeyUsage, generateOpenAIKey, MASTER_ADMIN_PASSWORD } from './key-store.mjs';
+import { normalizeResponsesRequest } from './protocols/openai-responses.mjs';
+import { listKeys, createKey, toggleKey, deleteKey, isKeyAuthorized, recordKeyUsage, generateOpenAIKey, isMasterSecret } from './key-store.mjs';
 
 function json(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
 }
 
-const SECRET_FIELDS = new Set(['token', 'refreshToken', 'refreshCookie', 'cookie', 'cuRefresh', 'initialToken', 'gatewayCache', 'queue']);
+function timingSafeCompare(a, b) {
+  const sa = String(a ?? '');
+  const sb = String(b ?? '');
+  if (!sa || !sb) return false;
+  const ba = Buffer.from(sa);
+  const bb = Buffer.from(sb);
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+
+const SECRET_FIELDS = new Set(['token', 'refreshToken', 'refreshCookie', 'cookie', 'cuRefresh', 'initialToken', 'gatewayCache', 'queue', 'mintedToken', 'sessionToken', 'apiKey', 'key']);
 
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
@@ -35,13 +46,9 @@ export function extractSuppliedToken(req) {
 export function authorized(req, key) {
   const supplied = extractSuppliedToken(req);
   if (supplied) {
-    if (supplied === MASTER_ADMIN_PASSWORD || supplied === "Tuan2005@!@#!@#") return true;
-    if (key) {
-      const a = Buffer.from(String(supplied));
-      const b = Buffer.from(String(key));
-      if (a.length === b.length && timingSafeEqual(a, b)) return true;
-    }
-    const storeAuth = isKeyAuthorized(supplied, MASTER_ADMIN_PASSWORD);
+    if (isMasterSecret(supplied)) return true;
+    if (key && timingSafeCompare(supplied, key)) return true;
+    const storeAuth = isKeyAuthorized(supplied);
     if (storeAuth && storeAuth.ok) return true;
     return false;
   }
@@ -52,10 +59,13 @@ export function authorized(req, key) {
 export function adminAuthorized(req, key) {
   if (isLocalAdmin(req)) return true;
   const supplied = extractSuppliedToken(req);
-  if (supplied === MASTER_ADMIN_PASSWORD || supplied === "Tuan2005@!@#!@#") return true;
-  if (Boolean(key) && authorized(req, key)) return true;
-  const storeAuth = isKeyAuthorized(supplied, MASTER_ADMIN_PASSWORD);
-  return Boolean(storeAuth && storeAuth.ok && storeAuth.role === "admin");
+  // Master password chỉ tồn tại nếu được cấu hình qua CLICKQUOTA_MASTER_PASSWORD.
+  if (isMasterSecret(supplied)) return true;
+  // Gateway key (env/admin-settings) là credential của operator.
+  if (key && timingSafeCompare(supplied, key)) return true;
+  // Store key chỉ có quyền admin khi role === 'admin' — user key KHÔNG được leo thang.
+  const storeAuth = isKeyAuthorized(supplied);
+  return Boolean(storeAuth && storeAuth.ok && storeAuth.role === 'admin');
 }
 
 export function isLocalAdmin(req) {
@@ -101,7 +111,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
     const requestId = randomUUID();
     const started = performance.now();
     const routePath = String(req.url || '').split('?')[0];
-    const tracked = req.method === 'POST' && ['/v1/messages', '/v1/chat/completions'].includes(routePath);
+    const tracked = req.method === 'POST' && ['/v1/messages', '/v1/chat/completions', '/v1/responses'].includes(routePath);
     let recorded = false;
     const record = (aborted = false) => {
       if (!tracked || recorded) return;
@@ -164,14 +174,14 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         const local = isLocalAdmin(req);
         if (!adminAuthorized(req, config.apiKey)) return json(res, 401, { error: 'Unauthorized' });
         if (route === '/admin/api/connection' && req.method === 'GET') {
-          return json(res, 200, { keyConfigured: Boolean(config.apiKey), keySource: config.keySource || (config.apiKey ? 'environment' : 'none'), rotationAllowed: !config.envKeyControlled && (!config.apiKey || config.keySource === 'admin-settings'), models: CLICKUP_MODELS, masterAdmin: MASTER_ADMIN_PASSWORD });
+          return json(res, 200, { keyConfigured: Boolean(config.apiKey), keySource: config.keySource || (config.apiKey ? 'environment' : 'none'), rotationAllowed: !config.envKeyControlled && (!config.apiKey || config.keySource === 'admin-settings'), models: CLICKUP_MODELS, masterAuthEnabled: Boolean(process.env.CLICKQUOTA_MASTER_PASSWORD) });
         }
         if (route === '/admin/api/key' && req.method === 'GET') {
           if (!local) return json(res, 403, { error: 'Local administrative access required to view key' });
+          // Không trả plaintext key qua GET (README: "GET không trả khóa hiện hữu").
           return json(res, 200, {
             ok: true,
             keyConfigured: Boolean(config.apiKey),
-            apiKey: config.apiKey || '',
             masked: config.apiKey ? (config.apiKey.length > 12 ? config.apiKey.slice(0, 7) + '••••••••' + config.apiKey.slice(-4) : '••••••••') : '',
             keySource: config.keySource || (config.apiKey ? 'environment' : 'none'),
             rotationAllowed: !config.envKeyControlled && (!config.apiKey || config.keySource === 'admin-settings'),
@@ -204,7 +214,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         }
 
         if (route === "/admin/api/keys" && req.method === "GET") {
-          return json(res, 200, { ok: true, keys: listKeys(), masterConfigured: true });
+          return json(res, 200, { ok: true, keys: listKeys(), masterAuthEnabled: Boolean(process.env.CLICKQUOTA_MASTER_PASSWORD) });
         }
 
         if (route === "/admin/api/keys/create" && req.method === "POST") {
@@ -222,7 +232,9 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
           const body = await readBody(req);
           const toggled = toggleKey(body.id, body.active);
           if (!toggled) return json(res, 404, { ok: false, error: "Key not found" });
-          return json(res, 200, { ok: true, key: toggled, keys: listKeys() });
+          // 2026-10-28: trả masked view — không bơm plaintext key qua response phụ.
+          const { key: _omit, ...pub } = toggled;
+          return json(res, 200, { ok: true, key: pub, keys: listKeys() });
         }
 
         if (route === "/admin/api/keys" && req.method === "DELETE") {
@@ -373,7 +385,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
             const verified = await clickupPool.verifyAccount(target);
             return json(res, 200, {
               ok: true,
-              verified,
+              verified: redact(verified),
               accounts: clickupPool.getAccountsSnapshot(),
               summary: clickupPool.getPoolSummary(),
             });
@@ -663,15 +675,32 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         return json(res, 200, { input_tokens: Math.max(1, count) });
       }
 
-      // ── AI Inference Dispatch (/v1/messages & /v1/chat/completions) ──
+      // ── AI Inference Dispatch ──
       const isMessagesEndpoint = route === '/v1/messages' || route.endsWith('/messages');
       const isChatEndpoint = route === '/v1/chat/completions' || route.endsWith('/chat/completions');
+      const isResponsesEndpoint = route === '/v1/responses' || route.endsWith('/responses');
 
-      if (req.method !== 'POST' || (!isMessagesEndpoint && !isChatEndpoint)) {
+      if (req.method !== 'POST' || (!isMessagesEndpoint && !isChatEndpoint && !isResponsesEndpoint)) {
         return json(res, 404, { error: { message: 'Not found' } });
       }
 
-      const rawBody = await readBody(req);
+      let rawBody = await readBody(req);
+      if (isResponsesEndpoint) {
+        try {
+          rawBody = normalizeResponsesRequest(rawBody);
+        } catch (err) {
+          // 2026-10-28 (P3): RangeError (payload lồng quá sâu) không lộ message nội bộ.
+          const isRange = err instanceof RangeError || /Maximum call stack/i.test(err?.message || '');
+          return json(res, 400, {
+            error: {
+              message: isRange ? 'Input payload is too deeply nested or malformed.' : err.message,
+              type: err.type || 'invalid_request_error',
+              param: err.param ?? 'input',
+              code: err.code || 'invalid_value',
+            },
+          });
+        }
+      }
       diagnostics.stream = Boolean(rawBody?.stream);
 
       const requestedModel = rawBody?.model || '';
@@ -704,23 +733,28 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       }
 
       const clientKey = extractSuppliedToken(req);
-      if (clientKey && clientKey !== MASTER_ADMIN_PASSWORD && clientKey !== 'Tuan2005@!@#!@#') {
-        recordKeyUsage(clientKey, diagnostics.outputTokens || 0);
-      }
-      if (provider) {
-        diagnostics.upstreamProvider = provider.name;
-        await provider.handleRequest({
-          req,
-          res,
-          rawBody,
-          route,
-          config,
-          signal: controller.signal,
-          diagnostics,
-          requestedModel,
-          requestId,
-        });
-        return;
+      try {
+        if (provider) {
+          diagnostics.upstreamProvider = provider.name;
+          await provider.handleRequest({
+            req,
+            res,
+            rawBody,
+            route,
+            config,
+            signal: controller.signal,
+            diagnostics,
+            requestedModel,
+            requestId,
+          });
+          return;
+        }
+      } finally {
+        // Ghi usage SAU khi handler chạy xong để diagnostics.outputTokens đã có giá trị
+        // thật — nếu không, tokensUsed luôn 0 và tokenLimit không bao giờ khớp.
+        if (clientKey && !isMasterSecret(clientKey)) {
+          try { recordKeyUsage(clientKey, diagnostics.outputTokens || 0); } catch { /* accounting must not break serving */ }
+        }
       }
 
       return json(res, 404, { error: { message: `No provider found for model "${requestedModel}"` } });

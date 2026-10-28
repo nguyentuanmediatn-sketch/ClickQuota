@@ -1,6 +1,6 @@
 # ClickQuota
 
-Ứng dụng Node.js độc lập, tách ClickUp AI provider từ SharkPool. Cung cấp endpoint OpenAI (`/v1/chat/completions`) và Anthropic (`/v1/messages`), pool nhiều workspace ClickUp có cân bằng tải, và trang Admin để quản lý tài khoản/workspace.
+Ứng dụng Node.js độc lập, tách ClickUp AI provider từ SharkPool. Cung cấp OpenAI Responses (`/v1/responses`), OpenAI Chat Completions (`/v1/chat/completions`) và Anthropic Messages (`/v1/messages`), pool nhiều workspace ClickUp có cân bằng tải, và trang Admin để quản lý tài khoản/workspace.
 
 Yêu cầu: Node.js >= 22.15. Dependency runtime duy nhất: `gpt-tokenizer` 4.0.0.
 
@@ -28,25 +28,34 @@ Sao chép `.env.example` thành `.env` (tùy chọn):
 - `CLICKQUOTA_HOST`: mặc định `127.0.0.1`.
 - `CLICKQUOTA_PORT`: mặc định `4310`.
 - `CLICKQUOTA_API_KEY`: bắt buộc khi bind ra ngoài loopback. Khi có key, gọi API bằng `Authorization: Bearer KEY` hoặc `x-api-key: KEY`. `/health` không cần key.
+- `CLICKQUOTA_MASTER_PASSWORD` (tùy chọn): mật khẩu master cho Admin. Không đặt → đường xác thực master tắt hoàn toàn. **Không bao giờ hardcode mật khẩu trong source.**
 
 Trạng thái lưu tại `.state/clickup_config.json` (neo vào thư mục ClickQuota, không phụ thuộc thư mục chạy). Cookie và token lưu dạng plaintext trong file này: hạn chế quyền truy cập thư mục, không commit, không chia sẻ.
 
 ## Admin
 
-Mở `/admin`. Từ máy chạy server (loopback) không cần key; từ máy khác phải gửi API key.
+Mở `/admin`. Từ máy chạy server (loopback) không cần key; từ máy khác phải gửi API key. Giao diện KHÔNG còn gắn sẵn mật khẩu master: operator nhập gateway key (hoặc `CLICKQUOTA_MASTER_PASSWORD` nếu server cấu hình) một lần vào phiên qua nút 🔑.
 
 - **Thêm tài khoản**: dán chuỗi cookie hoặc lệnh cURL copy từ trình duyệt đã đăng nhập ClickUp. Hệ thống chỉ phân tích chuỗi bằng regex, không chạy lệnh shell. Cần có `cu_refresh` để gia hạn token và để tạo workspace.
 - **Thêm workspace** thủ công bằng cURL/token.
 - **Auto Recreate Pool**: với mỗi tài khoản, quét danh sách workspace, giữ workspace gốc (đầu tiên), **xóa** các workspace do hệ thống tự sinh cũ (tên khớp `emailprefix_NN` hoặc `zcode_NN`, và tài khoản là chủ sở hữu), tạo workspace mới (mặc định 10 mỗi tài khoản) rồi gọi API kích hoạt trial plan 23. Đây là thao tác thật trên tài khoản ClickUp, hãy dùng có chủ đích.
 - Các nút gia hạn token, bật/tắt, xóa cooldown, test model.
 
-API Admin không trả `token`, `cookie`, `cuRefresh`, `refreshToken`, `refreshCookie`, `initialToken`.
+API Admin không trả `token`, `cookie`, `cuRefresh`, `refreshToken`, `refreshCookie`, `initialToken`, `mintedToken`. Danh sách key (`GET /admin/api/keys`) và `GET /admin/api/key` chỉ trả bản masked — plaintext key chỉ hiển thị đúng một lần ngay sau khi tạo. Key role `user` không có quyền admin; chỉ key role `admin`, gateway key, hoặc master password (nếu cấu hình).
 
 ## Kết nối, API key và nhật ký
 
 Thẻ **Connection & diagnostics** trên Admin hiển thị URL từ địa chỉ trình duyệt, endpoint đầy đủ, danh sách model từ API và ví dụ cURL có nút copy. Khóa dùng trong phiên Admin lưu trong `sessionStorage`; **Forget session key** xóa khóa của phiên, không xóa khóa server.
 
-Thứ tự ưu tiên khóa server: `CLICKQUOTA_API_KEY` (hoặc `API_KEY`) trong môi trường, bao gồm `.env` được launcher nạp, rồi `.state/admin_settings.json`, cuối cùng là không có khóa. Khóa quản lý bằng Admin được lưu plaintext bằng ghi atomic; bảo vệ file như cookie/token. GET không trả khóa hiện hữu. Khóa sinh mới chỉ hiện một lần trong hộp thoại; đóng hộp thoại sẽ xóa nội dung khỏi giao diện.
+Các dialect được hỗ trợ:
+
+- OpenAI Responses: `POST /v1/responses`, nhận `input`, `instructions`, `max_output_tokens`, function tools, function-call outputs và streaming event typed.
+- OpenAI Chat Completions: `POST /v1/chat/completions`, nhận `messages`, `tools`, tool-result history và `stream_options.include_usage`.
+- Anthropic Messages: `POST /v1/messages` và `POST /v1/messages/count_tokens`, nhận system content blocks, tool-use/tool-result blocks và Anthropic SSE events.
+
+`previous_response_id` được giữ trong bộ nhớ tối đa 256 hội thoại và 6 giờ. Cache không ghi nội dung hội thoại xuống đĩa; sau restart hoặc khi ID hết hạn, API trả lỗi rõ ràng và yêu cầu client gửi lại các input item trước đó.
+
+Thứ tự ưu tiên khóa server: `CLICKQUOTA_API_KEY` (hoặc `API_KEY`) trong môi trường, bao gồm `.env` được launcher nạp, rồi `.state/admin_settings.json`, cuối cùng là không có khóa. Khóa quản lý bằng Admin được lưu plaintext bằng ghi atomic; bảo vệ file như cookie/token. GET không trả khóa hiện hữu (chỉ masked). Khóa sinh mới chỉ hiện một lần trong hộp thoại; đóng hộp thoại sẽ xóa nội dung khỏi giao diện.
 
 Tạo/đổi/xoay khóa yêu cầu kết nối loopback trực tiếp, xác nhận thao tác và khóa hiện tại nếu đã cấu hình. Khóa môi trường không thể đổi qua Admin: sửa môi trường/.env rồi khởi động lại ClickQuota. Không sửa `.env` tự động. Ngoại lệ localhost kiểm tra peer, Host, Origin, Fetch Metadata và từ chối forwarded headers; truy cập qua proxy hoặc máy khác phải xác thực bằng khóa.
 
@@ -56,7 +65,7 @@ Tạo/đổi/xoay khóa yêu cầu kết nối loopback trực tiếp, xác nh�
 
 Log request tại `.state/logs/request-log.jsonl`, debug tại `.state/logs/debug-log.jsonl`. Mỗi loại giữ file hiện tại tối đa 2 MiB và một file xoay `.1`, tổng khoảng 8 MiB cho cả hai loại; bộ nhớ giữ 500 dòng mỗi loại, API đọc tối đa 200. Có thể đặt `CLICKQUOTA_LOG_DIR` để đổi thư mục log. Lịch sử có giới hạn được nạp lại sau restart.
 
-Request log chỉ theo dõi POST chat/messages: request ID, protocol/model, streaming, HTTP status, thời lượng, token ước lượng và kết quả. Lỗi SSE vẫn được đánh dấu lỗi kể cả HTTP 200. Không ghi prompt, response body, query string, cookie, Authorization hay khóa; request tải log không được ghi lại. Admin có hai tab, lọc, làm mới và tạm dừng tự tải.
+Request log chỉ theo dõi POST chat/messages/responses: request ID, protocol/model, streaming, HTTP status, thời lượng, TTFT (ttftMs), token ước lượng, workspace ID và kết quả. Lỗi SSE vẫn được đánh dấu lỗi kể cả HTTP 200. Không ghi prompt, response body, query string, cookie, Authorization hay khóa; request tải log không được ghi lại. Admin có hai tab, lọc, làm mới và tạm dừng tự tải.
 
 **Kiểm thử an toàn:** không chạy toàn bộ suite trực tiếp khi dự án có `.state` thật. Một số test cũ import pool trước khi thay fixture và có thể kích hoạt gia hạn token. Dùng bản sao tạm chỉ chứa `src`, `test`, `scripts`, `node_modules`, `package.json`, `package-lock.json`; tạo `.state/clickup_config.json` rỗng (`{"workspaces":[],"accounts":[]}`), không copy `.env`, preload `scripts/net-guard.mjs` qua `NODE_OPTIONS=--import file:///../scripts/net-guard.mjs` rồi chạy suite. `scripts/smoke.mjs` tự tạo bản sao cách ly. Test dùng mock không xác minh ClickUp thật hay giao diện trình duyệt.
 
@@ -78,7 +87,7 @@ Sau khi khởi động:
 
 - Kiểm tra quota toàn bộ workspace sau 3 giây và mỗi 15 phút.
 - Mỗi 30 phút gia hạn token còn dưới 6 giờ.
-- Nếu toàn bộ workspace bị khóa/hết hạn trial, hệ thống có thể tự kích hoạt Auto Recreate (tối đa một lần mỗi 10 phút).
+- Nếu toàn bộ workspace bị khóa/hết hạn trial, hệ thống có thể tự kích hoạt Auto Recreate (tối đa một lần mỗi 10 phút) — **chỉ khi dữ liệu quota của mọi workspace được audit THÀNH CÔNG trong vòng 30 phút**; audit lỗi hoặc dữ liệu stale sẽ hoãn trigger thay vì xóa workspace thật.
 
 ## Cân bằng tải
 
@@ -90,10 +99,13 @@ Mỗi request chọn workspace theo điểm: số request đang chạy, hàng đ
 - GET `/v1/models`: danh sách model alias, không xác minh quyền truy cập thực tế.
 - POST `/v1/chat/completions`: JSON hoặc SSE.
 - POST `/v1/messages`: JSON hoặc SSE.
+- POST `/v1/responses`: JSON hoặc SSE (OpenAI Responses dialect, hỗ trợ `previous_response_id` trong bộ nhớ 256 hội thoại / 6 giờ, entry ≤ 256 KiB).
+- POST `/v1/messages/count_tokens`
 - GET `/api/status`, POST `/api/quota/refresh`.
 - `/admin/api/clickup/*`: API cho trang Admin.
+- `/v1/images`, `/v1/videos`, `/v1/media`: proxy Muse provider (cấu hình qua `MUSE_BASE_URL`, `MUSE_API_KEY`).
 
-`/v1/responses` không hỗ trợ (404). SSE được phát sau khi nhận đủ completion từ ClickUp, không phải streaming token gốc. Chưa có workspace thì chat trả 503.
+SSE được phát sau khi nhận đủ completion từ ClickUp, không phải streaming token gốc. Chưa có workspace thì chat trả 503.
 
 ## Kiểm thử
 

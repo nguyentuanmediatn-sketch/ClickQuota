@@ -6,30 +6,11 @@ import { UpstreamQueue } from '../../upstream-queue.mjs';
 
 import http from 'node:http';
 import https from 'node:https';
-import fs from 'node:fs';
-import path from 'node:path';
 
-// CLICKQUOTA_STATE_DIR: tách .state của instance test/secondary khỏi bản production.
-const STATE_DIR = process.env.CLICKQUOTA_STATE_DIR || path.join(process.cwd(), '.state');
-const STATE_FILE = path.join(STATE_DIR, 'clickup_config.json');
-
-function readPoolConfig() {
-  if (!fs.existsSync(STATE_FILE)) return { workspaces: [], accounts: [] };
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch (err) {
-    console.warn('[ClickUpPool] Error reading state file:', err.message);
-    return { workspaces: [], accounts: [] };
-  }
-}
-
-function persistPoolConfig(updates) {
-  const current = readPoolConfig();
-  fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-  const temp = `${STATE_FILE}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(Object.assign({}, current, updates, { lastUpdated: new Date().toISOString() }), null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(temp, STATE_FILE);
-}
+// 2026-10-28 (P2, REL-09): dùng store chung của config.mjs — APP_ROOT-anchored
+// (tôn trọng CLICKQUOTA_STATE_DIR), đọc lỗi THROW (không còn default-rỗng khiến
+// persist ghi đè mất state thật), temp file duy nhất theo pid + cleanup trong finally.
+import { readPoolConfig, persistPoolConfig } from '../../config.mjs';
 import { alertEvents, ALERT_EVENTS } from '../../alert/events.mjs';
 
 function getClickUpApiBase() {
@@ -122,8 +103,10 @@ export function isManagedWorkspaceName(name, prefix = null) {
 }
 
 export function getNextDailyResetTime() {
+  // 2026-10-28 (P3): reset thật là 07:00 sáng giờ VN = 00:00 UTC. Bản cũ ghim
+  // 07:00 UTC (= 14:00 VN) — over-cool tối đa 7 tiếng so với reset thật.
   const now = new Date();
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 7, 0, 0, 0));
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
   if (next.getTime() <= now.getTime()) {
     next.setUTCDate(next.getUTCDate() + 1);
   }
@@ -406,6 +389,18 @@ export class WorkspacePool {
   async _bindWorkspace(ws, signal, poolSaturation = 0) {
     const releaseQueue = await ws.queue.acquire(signal);
 
+    // 2026-10-28 (P3): request có thể chờ queue lâu sau khi acquire() đã lọc cooldown.
+    // Nếu workspace vừa dính cooldown/quota-cạn trong lúc request chờ slot, fail fast
+    // thay vì vẫn dispatch → 403/429 rồi đốt một vòng failover.
+    const now = Date.now();
+    if ((ws.cooldownUntil && ws.cooldownUntil > now) || ws.quotaStatus === 'exhausted') {
+      releaseQueue();
+      const err = new Error(`Workspace "${ws.label}" vừa rơi vào cooldown trong lúc chờ hàng đợi`);
+      err.code = 'POOL_EXHAUSTED';
+      err.quotaExhausted = ws.quotaStatus === 'exhausted';
+      throw err;
+    }
+
     try {
       await this._applyAdaptiveMicroPacing(ws, poolSaturation, signal);
     } catch (err) {
@@ -540,6 +535,8 @@ export class WorkspacePool {
       ws.cooldownUntil = Date.now() + cooldownSec * 1000;
       ws.cooldownReason = `Rate Limit 429 (Streak: ${ws.rateLimitStreak}, Cooldown: ${cooldownSec}s)`;
       console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) bị Rate Limit 429 (streak ${ws.rateLimitStreak}) — cách ly ${cooldownSec}s.`);
+      // 2026-10-28 (P3): persist cooldown — trước đây restart mất cách ly.
+      this._schedulePersist();
       return;
     }
 
@@ -554,6 +551,8 @@ export class WorkspacePool {
       ws.cooldownReason = `Circuit Breaker: ${ws.consecutiveErrors} lỗi liên tiếp (${errMsg.slice(0, 60)})`;
       console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) kích hoạt Circuit Breaker (${ws.consecutiveErrors} lỗi liên tiếp) — cách ly 3 phút.`);
       this._emitCircuitOpen(ws);
+      // 2026-10-28 (P3): persist cooldown breaker qua restart.
+      this._schedulePersist();
     }
   }
 
@@ -794,7 +793,26 @@ export class WorkspacePool {
     return null;
   }
 
-  async mintWorkspaceTokenFromAccount(workspaceId, account) {
+  // 2026-10-28 (P2): serialize mint token theo TÀI KHOẢN. Mọi workspace cùng account
+  // chia sẻ cookie/cu_refresh; audit 15 phút bắn N mint song song dùng cùng cookie
+  // pre-rotation, last-writer-wins làm mất cookie đã rotate → 401 cascade cả account.
+  // Mutex chuỗi promise đảm bảo mint sau dùng cookie SAU khi mint trước merge xong.
+  _enqueueAccountMint(accountId, task) {
+    if (!this._accountMintLocks) this._accountMintLocks = new Map();
+    const prev = this._accountMintLocks.get(accountId) || Promise.resolve();
+    const run = prev.then(task, task);
+    this._accountMintLocks.set(accountId, run.catch(() => {}));
+    return run;
+  }
+
+  mintWorkspaceTokenFromAccount(workspaceId, account) {
+    if (!account) return Promise.reject(new Error('Account không tồn tại'));
+    return this._enqueueAccountMint(account.id || 'default', () =>
+      this._doMintWorkspaceTokenFromAccount(workspaceId, account)
+    );
+  }
+
+  async _doMintWorkspaceTokenFromAccount(workspaceId, account) {
     if (!account) throw new Error('Account không tồn tại');
     const cookieHeader = account.cookie || (account.cuRefresh ? `cu_refresh=${account.cuRefresh}` : null);
     if (!cookieHeader) throw new Error(`Account "${account.label || account.id}" chưa có cookie hoặc cu_refresh`);
@@ -902,6 +920,10 @@ export class WorkspacePool {
         ws.lastRenewAttempt = 0;
         ws.cooldownUntil = 0;
         ws.cooldownReason = null;
+        // 2026-10-28 (P3): renewal thành công phải mở khóa quotaStatus — nếu để
+        // 'exhausted' với cooldownUntil=0 thì sweep trong acquire không bao giờ
+        // chạy và workspace bị loại tới tận lần audit kế tiếp (≤15 phút).
+        if (ws.quotaStatus === 'exhausted') ws.quotaStatus = 'available';
         this._emitCircuitClose(ws);
         this.persist();
 
@@ -1594,9 +1616,16 @@ export class WorkspacePool {
           }
         } else {
           ws.quotaStatus = 'available';
-          ws.cooldownUntil = 0;
-          ws.cooldownReason = null;
-          this._emitCircuitClose(ws);
+          // 2026-10-28 (P2): audit quota thành công chỉ được xóa cooldown VÌ QUOTA.
+          // Cooldown phi-quota (Model bị khóa 24h, Rate Limit, Circuit Breaker) do
+          // reportError đặt — audit không có thông tin mới về chúng, xóa sẽ trả
+          // workspace hỏng về vòng xoay mỗi 15 phút để lại 403 / đốt failover.
+          const isQuotaCooldown = !ws.cooldownReason || /quota|hết hạn mức|fair use/i.test(ws.cooldownReason);
+          if (isQuotaCooldown) {
+            ws.cooldownUntil = 0;
+            ws.cooldownReason = null;
+            this._emitCircuitClose(ws);
+          }
         }
         return quotaObj;
       }
@@ -1641,9 +1670,13 @@ export class WorkspacePool {
     }
 
     const targetWs = this.workspaces.filter((w) => w.enabled && (!accountId || w.accountId === accountId));
+    const FRESH_MS = 30 * 60 * 1000;
     const allExhausted = targetWs.length > 0 && targetWs.every((w) => {
       const q = w.quota || {};
-      return q.isBlocked || w.quotaStatus === 'exhausted' || (w.cooldownUntil && w.cooldownUntil > now);
+      // SAFETY 2026-10-28 (P1-6): dữ liệu quota phải MỚI (<30 phút). Dữ liệu stale
+      // (audit lỗi / chưa audit) không đủ căn cứ để xóa workspace thật.
+      const fresh = (q.lastCheckedAt || 0) > Date.now() - FRESH_MS;
+      return fresh && (q.isBlocked || w.quotaStatus === 'exhausted' || (w.cooldownUntil && w.cooldownUntil > now));
     });
 
     if (allExhausted) {
@@ -1847,6 +1880,11 @@ export class WorkspacePool {
               if (delRes.ok) {
                 log(`  🗑️ Đã xóa thành công workspace cũ: ${t.name} (${t.id})`);
                 deletedIds.add(String(t.id));
+              } else if (delRes.status === 404 || delRes.status === 410) {
+                // 2026-10-28 (P3): team đã bị xóa server-side từ trước → coi như đã xóa.
+                // Trước đây entry pool với token chết được giữ bất tử và tên bị reuse.
+                log(`  🧟 Workspace ${t.id} không còn tồn tại server (${delRes.status}) — đánh dấu đã xóa.`);
+                deletedIds.add(String(t.id));
               } else {
                 log(`  ⚠️ Xóa workspace ${t.id} phản hồi status ${delRes.status}`);
               }
@@ -2025,18 +2063,33 @@ export class WorkspacePool {
   }
 
   async auditAllWorkspacesQuota() {
-    const promises = this.workspaces.filter((w) => w.enabled).map((w) => this.fetchWorkspaceQuota(w));
+    // 2026-10-28 SAFETY (P1-6): đếm audit THẤT BẠI. fetchWorkspaceQuota nuốt error
+    // và trả về quota stale — nếu dùng dữ liệu stale để kết luận "toàn pool cạn"
+    // thì Auto-Recreate sẽ xóa workspace SỐNG dựa trên dữ liệu cũ.
+    let auditFailures = 0;
+    const now = Date.now();
+    const promises = this.workspaces.filter((w) => w.enabled).map(async (w) => {
+      const before = w.quota?.lastCheckedAt || 0;
+      await this.fetchWorkspaceQuota(w);
+      if ((w.quota?.lastCheckedAt || 0) <= before) auditFailures += 1;
+    });
     await Promise.allSettled(promises);
     this.persist();
 
     // Tự động kiểm tra nếu toàn bộ Workspace đều cạn quota hoặc bị block thì trigger recreate
     const enabledWs = this.workspaces.filter((w) => w.enabled);
+    const FRESH_MS = 30 * 60 * 1000;
     const allExhausted = enabledWs.length > 0 && enabledWs.every((w) => {
       const q = w.quota || {};
-      return q.isBlocked || w.quotaStatus === 'exhausted' || (q.weeklyLeft === 0 && q.dailyLeft === 0);
+      const fresh = (q.lastCheckedAt || 0) > now - FRESH_MS;
+      return fresh && (q.isBlocked || w.quotaStatus === 'exhausted' || (q.weeklyLeft === 0 && q.dailyLeft === 0));
     });
-    if (allExhausted) {
+    // Chỉ recreate khi MỌI workspace vừa được audit thành công trong vòng 30 phút
+    // và không có lần fetch nào thất bại trong đợt audit này.
+    if (allExhausted && auditFailures === 0) {
       this._checkAndTriggerAutoRecreate({ reason: 'Audit phát hiện tất cả Workspace đều bị chặn hoặc cạn Quota' });
+    } else if (allExhausted && auditFailures > 0) {
+      console.warn(`[ClickUpPool] Auto-Recreate bị hoãn: ${auditFailures} workspace audit THẤT BẠI trong đợt vừa rồi — không xóa workspace dựa trên dữ liệu stale.`);
     }
   }
 
@@ -2059,7 +2112,10 @@ export class WorkspacePool {
         isBlocked: Boolean(rawQuota.isBlocked || isExhausted),
         lastCheckedAt: rawQuota.lastCheckedAt || null,
         status: isExhausted ? 'exhausted' : (isCooldown ? 'cooldown' : (rawQuota.status || 'available')),
-        resetsAt: '14:00 hàng ngày',
+        // 2026-10-28 (P3): hiển thị mốc reset thật thay vì chuỗi ghim cứng sai giờ.
+        resetsAt: rawQuota.dailyResetsAt
+          ? `Reset ${new Date(Date.parse(rawQuota.dailyResetsAt) || getNextDailyResetTime()).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`
+          : 'Reset 07:00 sáng (giờ VN)',
       };
 
       return {
@@ -2155,7 +2211,11 @@ export class WorkspacePool {
 function loadConfigFromFile() {
   try {
     return readPoolConfig();
-  } catch {
+  } catch (err) {
+    // 2026-10-28 (P2): state đọc lỗi KHÔNG còn âm thầm chạy rỗng. Persist sẽ không
+    // bao giờ ghi đè file hỏng (readPoolConfig throw bên trong persistPoolConfig),
+    // nhưng operator cần biết pool đang khởi động TRỐNG.
+    console.error(`[ClickUpPool] ⚠️ KHÔNG ĐỌC ĐƯỢC state file (pool khởi động rỗng, không ghi đè file): ${err.message}`);
     return { workspaces: [], accounts: [] };
   }
 }

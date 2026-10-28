@@ -61,7 +61,8 @@ export function loadConfig(env = process.env, options = {}) {
   }
   const keySource = envApiKey ? 'environment' : (storedApiKey ? 'admin-settings' : 'none');
   const museBaseUrl = env.MUSE_BASE_URL || 'http://127.0.0.1:18610';
-  const museApiKey = env.MUSE_API_KEY || 'm2a_test_local_123456';
+  // 2026-10-28 (P2): không còn default key hardcode — thiếu MUSE_API_KEY thì gửi không auth.
+  const museApiKey = env.MUSE_API_KEY || '';
   return { host, port, apiKey, keySource, envKeyControlled: Boolean(envApiKey), settingsFile, thinkingEnabled: false, museBaseUrl, museApiKey };
 }
 

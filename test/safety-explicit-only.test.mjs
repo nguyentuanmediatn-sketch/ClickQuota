@@ -48,6 +48,49 @@ for (const [name, text] of unitCases) {
   });
 }
 
+// ── SAFETY10-13 (2026-10-28): khóa suy diễn tool call từ ví dụ JSON trong văn xuôi ──
+import { extractTextToolCalls } from '../src/tools/text-fallback.mjs';
+import { parseToolCallsFromText } from '../src/clickup-upstream.mjs';
+import { createClickUpToolMapper } from '../src/clickup-tools.mjs';
+
+const bashCatalog = [
+  { name: 'Bash', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  { name: 'Read', parameters: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] } },
+];
+
+test('SAFETY10 prose_embedded_bare_json_not_protocol — JSON example giữa văn xuôi không thành tool call', () => {
+  const prose = 'To call the API you write {"name":"Bash","arguments":{"command":"echo hi"}} in your code.';
+  assert.equal(extractTextToolCalls(prose), null, 'bare JSON chiếm <70% nội dung → phải bỏ qua');
+  assert.equal(parseToolCallsFromText(prose, bashCatalog), null);
+});
+
+test('SAFETY11 zero_tools_no_parse — client khai báo 0 tool thì không extract call nào', () => {
+  const reply = '{"name":"Bash","arguments":{"command":"echo hi"}}';
+  assert.equal(parseToolCallsFromText(reply, []), null, '0 tool → parser phải trả null');
+  assert.equal(parseToolCallsFromText(reply), null, 'mặc định không có catalog → null');
+});
+
+test('SAFETY12 unknown_tool_name_dropped — mapper chỉ nhận tên có trong catalog client', () => {
+  const mapper = createClickUpToolMapper('unknown', bashCatalog);
+  assert.equal(mapper.map({ name: 'definitelyNotATool', arguments: { command: 'echo hi' } }), null,
+    'tên không tồn tại trong catalog phải bị drop');
+  // Alias chuẩn: Bash → executeShellCommand trong catalog zcode vẫn được map (healing hợp lệ)
+  const zcodeCatalog = [
+    { name: 'executeShellCommand', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  ];
+  const zcodeMapper = createClickUpToolMapper('zcode', zcodeCatalog);
+  const mapped = zcodeMapper.map({ name: 'Bash', arguments: { command: 'echo hi' } });
+  assert.ok(mapped, 'Bash phải map được sang executeShellCommand qua alias registry');
+  assert.equal(mapped.name, 'executeShellCommand');
+});
+
+test('SAFETY13 bare_json_whole_reply_still_extracts — bare JSON là TOÀN BỘ reply vẫn extract', () => {
+  const reply = '{"name":"Bash","arguments":{"command":"echo hi"}}';
+  const calls = extractTextToolCalls(reply);
+  assert.ok(Array.isArray(calls) && calls.length === 1, 'reply thuần JSON tool call vẫn phải extract');
+  assert.equal(calls[0].name, 'Bash');
+});
+
 const scenarios = [
   {
     id: 'warning_with_stall',
@@ -114,6 +157,12 @@ async function readRequestBody(req) {
 }
 
 function parseNonStream(route, body) {
+  if (route.includes('/responses')) {
+    const calls = (body.output || [])
+      .filter((item) => item.type === 'function_call')
+      .map((item) => ({ name: item.name, input: JSON.parse(item.arguments || '{}') }));
+    return { calls, stopReason: calls.length ? 'tool_calls' : 'stop' };
+  }
   if (route.includes('/chat/completions')) {
     const calls = body.choices?.[0]?.message?.tool_calls || [];
     return {
@@ -136,6 +185,13 @@ function parseSse(route, text) {
     .map((line) => line.slice(6))
     .filter((data) => data !== '[DONE]')
     .map((data) => JSON.parse(data));
+
+  if (route.includes('/responses')) {
+    const calls = events
+      .filter((event) => event.type === 'response.output_item.done' && event.item?.type === 'function_call')
+      .map((event) => ({ name: event.item.name, input: JSON.parse(event.item.arguments || '{}') }));
+    return { calls, stopReason: calls.length ? 'tool_calls' : 'stop' };
+  }
 
   if (route.includes('/chat/completions')) {
     const calls = [];
@@ -253,18 +309,25 @@ test('SAFETY09 HTTP explicit-only matrix', async (t) => {
     },
   ];
 
-  const request = (route, stream) => fetch(base + route, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': 'phase1-test-key' },
-    body: JSON.stringify({
+  const request = (route, stream) => {
+    const body = {
       model: 'gpt-6-luna-CL',
       messages: [{ role: 'user', content: 'Return the safe result for this regression scenario.' }],
       stream,
       tools,
-    }),
-  });
+    };
+    if (route.includes('/responses')) {
+      body.input = body.messages;
+      delete body.messages;
+    }
+    return fetch(base + route, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'phase1-test-key' },
+      body: JSON.stringify(body),
+    });
+  };
 
-  for (const route of ['/v1/messages', '/v1/chat/completions']) {
+  for (const route of ['/v1/messages', '/v1/chat/completions', '/v1/responses']) {
     for (const stream of [false, true]) {
       for (const scenario of scenarios) {
         const transport = stream ? 'stream' : 'json';
@@ -294,7 +357,7 @@ test('SAFETY09 HTTP explicit-only matrix', async (t) => {
             assert.equal(parsed.calls[0].input.command, command);
             assert.equal(
               parsed.stopReason,
-              route.includes('/chat/completions') ? 'tool_calls' : 'tool_use',
+              route.includes('/messages') ? 'tool_use' : 'tool_calls',
             );
             assert.equal(upstreamBodies.length, 1);
             return;
@@ -303,7 +366,7 @@ test('SAFETY09 HTTP explicit-only matrix', async (t) => {
           assert.deepEqual(parsed.calls, []);
           assert.equal(
             parsed.stopReason,
-            route.includes('/chat/completions') ? 'stop' : 'end_turn',
+            route.includes('/messages') ? 'end_turn' : 'stop',
           );
 
           // 2026-10-27: không còn Rescue Turn — đúng 1 lần gọi upstream cho mọi scenario

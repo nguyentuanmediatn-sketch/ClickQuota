@@ -8,8 +8,10 @@ export const DEBUG_LOG = path.join(LOG_DIR, 'debug-log.jsonl');
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_MEMORY = 500;
 const SAFE_FIELDS = new Set(['timestamp', 'requestId', 'method', 'path', 'protocol', 'requestedModel', 'resolvedModel', 'workspaceId', 'stream', 'status', 'durationMs', 'ttftMs', 'inputTokens', 'outputTokens', 'outcome', 'errorCode', 'code', 'level']);
-const SAFE_PATHS = new Set(['/v1/messages', '/v1/chat/completions', '/v1/models', '/health', '/api/status', '/api/quota/refresh']);
-const SAFE_CODES = new Set(['server_start', 'config_loaded', 'key_changed', 'config_error', 'request_error', 'request_aborted', 'upstream_error', 'stream_error', 'server_error']);
+const SAFE_PATHS = new Set(['/v1/messages', '/v1/chat/completions', '/v1/responses', '/v1/models', '/health', '/api/status', '/api/quota/refresh']);
+// 2026-10-28 (P3): bổ sung code crash-handler của index.mjs — trước đây bị coerce
+// thành 'server_error' khiến không phân biệt được uncaught_exception trong log.
+const SAFE_CODES = new Set(['server_start', 'config_loaded', 'key_changed', 'config_error', 'request_error', 'request_aborted', 'upstream_error', 'stream_error', 'server_error', 'uncaught_exception', 'unhandled_rejection']);
 const memory = { request: [], debug: [] };
 
 function cleanRecord(kind, data) {

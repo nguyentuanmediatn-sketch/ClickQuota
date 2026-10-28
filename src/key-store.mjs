@@ -3,12 +3,24 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const APP_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const KEYS_FILE = path.join(APP_ROOT, '.state', 'api_keys.json');
-export const MASTER_ADMIN_PASSWORD = 'Tuan2005@!@#!@#';
+
+// Master admin password KHÔNG còn hardcode: chỉ lấy từ môi trường
+// (CLICKQUOTA_MASTER_PASSWORD trong .env). Để trống/tắt → đường xác thực master bị tắt,
+// xác thực admin dùng gateway key (env/admin-settings) hoặc key role 'admin' trong store.
+export const MASTER_ADMIN_PASSWORD = String(process.env.CLICKQUOTA_MASTER_PASSWORD || '').trim();
+
+export function isMasterSecret(supplied) {
+  if (!supplied || typeof supplied !== 'string' || !MASTER_ADMIN_PASSWORD) return false;
+  const a = Buffer.from(supplied.trim());
+  const b = Buffer.from(MASTER_ADMIN_PASSWORD);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -65,12 +77,13 @@ export function saveKeys(keys) {
   }
 }
 
-// Trả về danh sách keys với key được ẩn nhẹ (nếu cần) hoặc đầy đủ
+// Trả về danh sách keys dưới dạng public view — KHÔNG bao giờ trả plaintext key.
+// Plaintext chỉ trả về một lần duy nhất ngay sau khi createKey thành công.
 export function listKeys() {
   const keys = loadKeys();
-  return keys.map(k => ({
-    ...k,
-    masked: k.key ? k.key.slice(0, 7) + '••••••••' + k.key.slice(-4) : ''
+  return keys.map(({ key, ...pub }) => ({
+    ...pub,
+    masked: key ? key.slice(0, 7) + '••••••••' + key.slice(-4) : ''
   }));
 }
 
@@ -142,11 +155,11 @@ export function recordKeyUsage(keyString, tokens = 0) {
 }
 
 // Kiểm tra key có quyền truy cập API Client không
-export function isKeyAuthorized(keyString, masterPassword = MASTER_ADMIN_PASSWORD) {
+export function isKeyAuthorized(keyString) {
   if (!keyString || typeof keyString !== 'string') return false;
   const clean = keyString.trim();
-  // 1. Master Admin Password luôn được phép
-  if (clean === masterPassword || clean === MASTER_ADMIN_PASSWORD || clean === 'Tuan2005@!@#!@#') {
+  // 1. Master Admin Password (từ env) luôn được phép — timing-safe so khớp
+  if (isMasterSecret(clean)) {
     return { ok: true, isMaster: true, role: 'admin' };
   }
   // 2. Tra cứu trong Sharkpool Key Store

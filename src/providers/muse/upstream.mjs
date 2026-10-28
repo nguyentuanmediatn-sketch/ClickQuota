@@ -1,9 +1,11 @@
-import http from 'node:http';
+// 2026-10-28 (P2 verify fix): http import đã thừa sau khi bỏ dead httpAgent.
 
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32 });
-
+// 2026-10-28 (P2): httpAgent là dead code — Node fetch không dùng agent; bỏ.
 export const MUSE_DEFAULT_URL = process.env.MUSE_BASE_URL || 'http://127.0.0.1:18610';
-export const MUSE_DEFAULT_KEY = process.env.MUSE_API_KEY || 'm2a_test_local_123456';
+// 2026-10-28 (P2): KHÔNG còn default key hardcode trong source. Key lấy từ env
+// MUSE_API_KEY (đã có trong .env/.env.example). Thiếu key → không gửi header
+// Authorization (muse2api local không auth vẫn chạy; remote sẽ tự từ chối).
+export const MUSE_DEFAULT_KEY = process.env.MUSE_API_KEY || '';
 
 export const MUSE_MODELS = [
   'spark',
@@ -77,22 +79,42 @@ export async function handleMuseRequest({ req, res, rawBody, route, config, sign
   };
 
   const headers = {
-    'Authorization': `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
     'Accept': wantsStream ? 'text/event-stream' : 'application/json',
   };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
   if (diagnostics) {
     diagnostics.upstreamProvider = 'muse';
     diagnostics.model = targetModel;
   }
 
-  const upstreamRes = await fetch(targetUrl, {
-    method: req.method || 'POST',
-    headers,
-    body: req.method === 'GET' ? undefined : JSON.stringify(payload),
-    signal,
-  });
+  // 2026-10-28 (P3): client đã abort thì trả sớm — trước đây fetch reject
+  // unhandled bên trong hàm, chỉ được server-level catch cứu (500 + res.end).
+  if (signal?.aborted) {
+    if (!res.writableEnded) res.end();
+    return;
+  }
+
+  let upstreamRes;
+  try {
+    upstreamRes = await fetch(targetUrl, {
+      method: req.method || 'POST',
+      headers,
+      body: req.method === 'GET' ? undefined : JSON.stringify(payload),
+      signal,
+    });
+  } catch (err) {
+    if (!res.writableEnded) {
+      const aborted = signal?.aborted || err?.name === 'AbortError';
+      if (aborted) res.end();
+      else {
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: { message: `Muse upstream unreachable: ${err?.message || err}` } }));
+      }
+    }
+    return;
+  }
 
   if (!upstreamRes.ok) {
     const errText = await upstreamRes.text();
