@@ -137,6 +137,35 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         return json(res, 200, { status: 'ok', service: 'clickquota' });
       }
 
+      // ── Admin Redesign preview (/admin-next) — tách khỏi admin production ──
+      // Serve prototype từ design/admin-redesign để xem trước giao diện mới mà
+      // không đụng /admin đang chạy. Path traversal bị chặn (.. và backslash).
+      if (req.method === 'GET' && (route === '/admin-next' || route.startsWith('/admin-next/'))) {
+        const rel = route === '/admin-next' ? 'index.html' : decodeURIComponent(route.slice('/admin-next/'.length));
+        if (rel.includes('..') || rel.includes('\\') || rel.startsWith('/')) {
+          return json(res, 403, { error: { message: 'Forbidden' } });
+        }
+        try {
+          const designRoot = new URL('../design/admin-redesign/', import.meta.url);
+          const filePath = new URL(rel, designRoot);
+          if (!filePath.href.startsWith(designRoot.href)) throw new Error('traversal');
+          const content = readFileSync(filePath);
+          const ext = filePath.pathname.split('.').pop();
+          const type = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', svg: 'image/svg+xml' }[ext] || 'application/octet-stream';
+          res.writeHead(200, {
+            'content-type': type,
+            'cache-control': 'no-store',
+            'content-security-policy': "frame-ancestors 'none'; base-uri 'self'",
+            'x-frame-options': 'DENY',
+            'x-content-type-options': 'nosniff',
+          });
+          res.end(content);
+          return;
+        } catch {
+          return json(res, 404, { error: { message: `Design asset not found: ${rel}` } });
+        }
+      }
+
       // ── Static Admin Assets ──
       if (req.method === 'GET' && STATIC_ADMIN_ASSETS.has(route)) {
         const asset = STATIC_ADMIN_ASSETS.get(route);
