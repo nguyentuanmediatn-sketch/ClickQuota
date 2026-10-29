@@ -3,237 +3,237 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ClickQuota — Quản Trị Hệ Thống New-API & Sharkpool</title>
+  <title>ClickQuota — AI Gateway & Pool Manager</title>
   <link rel="stylesheet" href="/admin/admin.css">
-  <style>
-    .table td, .table th { vertical-align: middle; }
-    .modal-backdrop {
-      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px);
-      z-index: 1050; display: flex; align-items: center; justify-content: center; padding: 20px;
-    }
-    .modal-dialog {
-      background: #111827; border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 12px; width: 100%; max-width: 580px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6); overflow: hidden;
-    }
-  </style>
 </head>
 <body>
 <div class="app-layout">
-  <!-- 1. FIXED LEFT SIDEBAR (NEW-API STANDARD) -->
-  <aside class="app-sidebar">
+  <!-- 1. LEFT SIDEBAR (Minimalist Navigation) -->
+  <aside class="app-sidebar" aria-label="Main Navigation">
     <div class="sidebar-header">
-      <span class="sidebar-brand-icon">⚡</span>
+      <div class="sidebar-brand-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+      </div>
       <div>
         <div class="sidebar-brand-title">ClickQuota</div>
         <div class="sidebar-brand-desc">AI Gateway & Pool Manager</div>
       </div>
     </div>
+
     <nav class="sidebar-nav">
-      <div class="nav-section-title">Hệ Thống & Quản Trị</div>
+      <div class="nav-section-title">Quản trị hệ thống</div>
       <div class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
-        <span class="nav-icon">📊</span>
-        <span>Tổng quan (Dashboard)</span>
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
+        </span>
+        <span>Dashboard</span>
         <span class="nav-badge" id="nav-badge-ws">--</span>
       </div>
       <div class="nav-item" data-tab="keys" onclick="switchTab('keys')">
-        <span class="nav-icon">🔑</span>
-        <span>Quản lý API Keys</span>
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 2-2 2m-1.5 1.5L14 9l-1.5-1.5-3 3 1.5 1.5L9 14l-3-3L2 15l4 4 15-15Z"></path></svg>
+        </span>
+        <span>API Keys</span>
         <span class="nav-badge" id="nav-badge-keys">0</span>
       </div>
       <div class="nav-item" data-tab="channels" onclick="switchTab('channels')">
-        <span class="nav-icon">⚡</span>
-        <span>Channels / Upstream</span>
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+        </span>
+        <span>Workspaces & Pool</span>
         <span class="nav-badge" id="nav-badge-channels">--</span>
       </div>
       <div class="nav-item" data-tab="logs" onclick="switchTab('logs')">
-        <span class="nav-icon">📋</span>
-        <span>Lịch sử Logs</span>
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        </span>
+        <span>Logs & Metrics</span>
         <span class="nav-badge" id="nav-badge-logs">Live</span>
       </div>
-      <div class="nav-section-title">Tùy Chỉnh & Thử Nghiệm</div>
+
+      <div class="nav-section-title">Cấu hình & Kiểm thử</div>
       <div class="nav-item" data-tab="settings" onclick="switchTab('settings')">
-        <span class="nav-icon">⚙️</span>
-        <span>Cài đặt & Playground</span>
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </span>
+        <span>Cài đặt & Lab</span>
       </div>
     </nav>
+
     <div class="sidebar-footer">
       <div class="admin-profile-card">
         <div class="admin-avatar">A</div>
         <div class="admin-info">
-          <div class="admin-name" title="ClickQuota Operator">ClickQuota Operator</div>
-          <div class="admin-role">● Phiên quản trị</div>
+          <div class="admin-name" title="ClickQuota Operator">Operator</div>
+          <div class="admin-role">Phiên quản trị</div>
         </div>
-        <button type="button" class="btn-ghost" style="padding: 4px 6px; font-size: 11px;" onclick="resetAdminAuth()" title="Đổi / Nhập lại mã khóa">🔑</button>
+        <button type="button" class="btn-ghost" style="padding: 4px 6px; font-size: 11px;" onclick="resetAdminAuth()" title="Đổi / Nhập lại mã khóa">Khóa</button>
       </div>
-      <div style="font-size: 10px; color: var(--text-subtle); text-align: center; margin-top: 2px;">
-        ClickQuota v2.5.0 • Standard New-API
+      <div style="font-size: 10px; color: var(--text-subtle); text-align: center;">
+        v2.5.0 • ClickQuota Gateway
       </div>
     </div>
   </aside>
-  <!-- 2. MAIN CONTENT WRAPPER -->
+
+  <!-- 2. MAIN CONTENT AREA -->
   <div class="app-main-wrapper">
     <header class="app-topbar">
       <div class="topbar-left">
-        <h2 id="topbar-title" class="topbar-page-title">📊 Tổng quan hệ thống</h2>
+        <h2 id="topbar-title" class="topbar-page-title">Dashboard</h2>
       </div>
       <div class="topbar-right">
         <span id="clickup-badge-count" class="badge badge-healthy">-- WS</span>
-        <span id="muse-badge-status" class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4);">Muse2API: Sẵn sàng</span>
-        <span id="admin-auth-status" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.4);">Master Admin</span>
-        <button id="btn-quick-refresh" type="button" class="btn-ghost" style="padding: 6px 12px; font-size: 12px;" onclick="window.loadClickUpHub(true)">🔄 Đồng bộ</button>
+        <span id="muse-badge-status" class="badge" style="background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.25);">Muse2API: Sẵn sàng</span>
+        <span id="admin-auth-status" class="badge" style="background: rgba(99, 102, 241, 0.1); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.25);">Master Admin</span>
+        <button id="btn-quick-refresh" type="button" class="btn-ghost" onclick="window.loadClickUpHub(true)">Đồng bộ</button>
       </div>
     </header>
+
     <main class="app-content">
-      <!-- TAB 1: TỔNG QUAN (DASHBOARD) -->
+      <!-- TAB 1: DASHBOARD -->
       <section id="view-dashboard" class="tab-pane active">
-        <!-- Top Stat Grid -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 24px;">
-          <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">WORKSPACES ACTIVE</div>
-            <div id="clickup-stat-ws" style="font-size: 24px; font-weight: 800; color: #38bdf8;">-- / -- Active</div>
-            <div id="clickup-stat-ws-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">-- đang cooldown</div>
+        <!-- Top Metric Grid -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 20px;">
+          <div class="metric-card">
+            <div style="font-size: 11px; color: var(--text-subtle); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-bottom: 6px;">Workspaces Active</div>
+            <div id="clickup-stat-ws" style="font-size: 22px; font-weight: 700; color: #38bdf8; font-feature-settings: 'tnum';">-- / -- Active</div>
+            <div id="clickup-stat-ws-sub" style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">-- đang cooldown</div>
           </div>
-          <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">QUOTA NGÀY (CLICKUP)</div>
-            <div id="clickup-stat-quota-daily" style="font-size: 24px; font-weight: 800; color: #38bdf8;">-- / -- tokens</div>
-            <div id="clickup-stat-quota-daily-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Còn -- tokens • Reset 07:00 sáng (giờ VN)</div>
+          <div class="metric-card">
+            <div style="font-size: 11px; color: var(--text-subtle); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-bottom: 6px;">Quota Ngày (ClickUp)</div>
+            <div id="clickup-stat-quota-daily" style="font-size: 22px; font-weight: 700; color: #38bdf8; font-feature-settings: 'tnum';">-- / -- tokens</div>
+            <div id="clickup-stat-quota-daily-sub" style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">Còn -- tokens • Reset 07:00</div>
           </div>
-          <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">QUOTA TUẦN (CLICKUP)</div>
-            <div id="clickup-stat-quota-weekly" style="font-size: 24px; font-weight: 800; color: #a7f3d0;">-- / -- tokens</div>
-            <div id="clickup-stat-quota-weekly-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Còn -- tokens • Reset thứ Hai</div>
+          <div class="metric-card">
+            <div style="font-size: 11px; color: var(--text-subtle); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-bottom: 6px;">Quota Tuần</div>
+            <div id="clickup-stat-quota-weekly" style="font-size: 22px; font-weight: 700; color: #34d399; font-feature-settings: 'tnum';">-- / -- tokens</div>
+            <div id="clickup-stat-quota-weekly-sub" style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">Còn -- tokens • Reset thứ Hai</div>
           </div>
-          <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">SESSION TOKEN EXP</div>
-            <div id="clickup-stat-exp" style="font-size: 24px; font-weight: 800; color: #34d399;">~--h còn lại</div>
-            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Tự renew khi &lt; 6h</div>
+          <div class="metric-card">
+            <div style="font-size: 11px; color: var(--text-subtle); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-bottom: 6px;">Session Token Exp</div>
+            <div id="clickup-stat-exp" style="font-size: 22px; font-weight: 700; color: #34d399; font-feature-settings: 'tnum';">~--h còn lại</div>
+            <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">Tự renew khi &lt; 6h</div>
           </div>
-          <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">CONCURRENCY & IN-FLIGHT</div>
-            <div id="clickup-stat-concurrency" style="font-size: 24px; font-weight: 800; color: #f59e0b;">0 In-Flight</div>
-            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">3 slots/workspace</div>
+          <div class="metric-card">
+            <div style="font-size: 11px; color: var(--text-subtle); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-bottom: 6px;">Concurrency / In-Flight</div>
+            <div id="clickup-stat-concurrency" style="font-size: 22px; font-weight: 700; color: #fbbf24; font-feature-settings: 'tnum';">0 In-Flight</div>
+            <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">3 slots/workspace</div>
           </div>
-          <div class="metric-card" style="padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">TÀI KHOẢN MẸ (REFRESH)</div>
-            <div id="clickup-stat-accounts" style="font-size: 24px; font-weight: 800; color: #a78bfa;">-- Tài khoản</div>
-            <div id="clickup-stat-accounts-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Chứa cu_refresh cookie</div>
+          <div class="metric-card">
+            <div style="font-size: 11px; color: var(--text-subtle); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; margin-bottom: 6px;">Tài Khoản Mẹ (Refresh)</div>
+            <div id="clickup-stat-accounts" style="font-size: 22px; font-weight: 700; color: #a78bfa; font-feature-settings: 'tnum';">-- Tài khoản</div>
+            <div id="clickup-stat-accounts-sub" style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">Chứa cu_refresh cookie</div>
           </div>
         </div>
-        <div id="dash-quota-blocked-alert" style="display: none; margin-bottom: 24px; padding: 14px 16px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 10px; font-size: 13px; color: #fde68a; line-height: 1.6;"></div>
+
+        <div id="dash-quota-blocked-alert" style="display: none; margin-bottom: 20px; padding: 12px 16px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-md); font-size: 12.5px; color: #fde68a; line-height: 1.6;"></div>
+
         <!-- Health & Pool Actions -->
-        <div class="card" style="margin-bottom: 24px; padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
+        <div class="card" style="margin-bottom: 20px; padding: 16px 20px;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <span style="font-size: 22px;">🛡️</span>
-              <div>
-                <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: #fff;">Điều Khiển & Kiểm Tra Sức Khỏe Pool</h3>
-                <div style="font-size: 12px; color: var(--text-muted);">Quét live quota, xoay vòng tài nguyên tự động và đồng bộ trạng thái Gateway</div>
-              </div>
+            <div>
+              <h3 style="margin: 0; font-size: 14px; font-weight: 600; color: #fff;">Điều khiển & Kiểm tra sức khỏe Pool</h3>
+              <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Quét live quota, xoay vòng tài nguyên tự động và đồng bộ trạng thái Gateway</div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <button id="clickup-ping-all-btn" class="btn-ghost" type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; font-size: 12px; border-color: rgba(99, 102, 241, 0.4); color: #a5b4fc;">
-                <span id="clickup-ping-all-icon">⚡</span> <span id="clickup-ping-all-text">Kiểm Tra Sức Khỏe Toàn Pool</span>
+              <button id="clickup-ping-all-btn" class="btn-ghost" type="button" style="border-color: rgba(99, 102, 241, 0.3); color: #a5b4fc;">
+                <span id="clickup-ping-all-icon" style="display: inline-block;">●</span> <span id="clickup-ping-all-text">Kiểm Tra Toàn Pool</span>
               </button>
-              <button id="btn-clickup-refresh" class="btn-ghost" type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; font-size: 12px;">
-                <span>🔄</span> Làm Mới
+              <button id="btn-clickup-refresh" class="btn-ghost" type="button">
+                Làm Mới
               </button>
-              <button id="btn-clickup-autorefresh-toggle" class="btn-ghost" type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; font-size: 12px; color: #34d399;">
-                <span id="autorefresh-dot">🟢</span> <span id="autorefresh-label">Auto-Refresh: Bật (3s)</span>
+              <button id="btn-clickup-autorefresh-toggle" class="btn-ghost" type="button" style="color: #34d399;">
+                <span id="autorefresh-dot">●</span> <span id="autorefresh-label">Auto-Refresh: Bật (3s)</span>
               </button>
             </div>
           </div>
         </div>
+
         <!-- Quick Overview Panes -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
-          <div class="card" style="padding: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-              <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-                <span>🔑</span> API Keys Chuẩn OpenAI
-              </h3>
-              <button type="button" class="btn-ghost" style="padding: 4px 10px; font-size: 11px;" onclick="switchTab('keys')">Quản lý & Cấp Key ➔</button>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+          <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <h3 style="margin: 0; font-size: 14px; font-weight: 600; color: #fff;">API Keys (Sharkpool)</h3>
+              <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="switchTab('keys')">Quản lý ➔</button>
             </div>
-            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">
-              Cấp API Key chuẩn <code>sk-[48 ký tự]</code>, quản lý đa key, đếm lượt gọi và hạn mức kiểu Sharkpool.
+            <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 14px 0;">
+              Cấp API Key chuẩn <code>sk-[48 ký tự]</code>, quản lý đa key, đếm lượt gọi và hạn mức.
             </p>
-            <div style="display: flex; gap: 12px;">
-              <div style="flex: 1; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; text-align: center;">
-                <div style="font-size: 11px; color: var(--text-muted);">ACTIVE KEYS</div>
-                <div id="dash-active-keys-count" style="font-size: 20px; font-weight: 700; color: #34d399;">--</div>
+            <div style="display: flex; gap: 10px;">
+              <div style="flex: 1; padding: 10px; background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; text-align: center;">
+                <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Active Keys</div>
+                <div id="dash-active-keys-count" style="font-size: 18px; font-weight: 700; color: #34d399; margin-top: 2px;">--</div>
               </div>
-              <div style="flex: 1; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; text-align: center;">
-                <div style="font-size: 11px; color: var(--text-muted);">TỔNG LƯỢT GỌI</div>
-                <div id="dash-total-requests-count" style="font-size: 20px; font-weight: 700; color: #38bdf8;">--</div>
+              <div style="flex: 1; padding: 10px; background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; text-align: center;">
+                <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Tổng lượt gọi</div>
+                <div id="dash-total-requests-count" style="font-size: 18px; font-weight: 700; color: #38bdf8; margin-top: 2px;">--</div>
               </div>
-              <div style="flex: 1; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; text-align: center;">
-                <div style="font-size: 11px; color: var(--text-muted);">TOKENS TIÊU THỤ</div>
-                <div id="dash-total-tokens-count" style="font-size: 20px; font-weight: 700; color: #c084fc;">--</div>
+              <div style="flex: 1; padding: 10px; background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; text-align: center;">
+                <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Tokens tiêu thụ</div>
+                <div id="dash-total-tokens-count" style="font-size: 18px; font-weight: 700; color: #c084fc; margin-top: 2px;">--</div>
               </div>
             </div>
           </div>
-          <div class="card" style="padding: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-              <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-                <span>🌐</span> Điểm Kết Nối Gateway
-              </h3>
-              <button type="button" class="btn-ghost" style="padding: 4px 10px; font-size: 11px;" onclick="switchTab('settings')">Xem Chi Tiết ➔</button>
+
+          <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <h3 style="margin: 0; font-size: 14px; font-weight: 600; color: #fff;">Điểm kết nối Gateway</h3>
+              <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="switchTab('settings')">Chi tiết ➔</button>
             </div>
-            <div style="display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);">
-                <span style="color: var(--text-muted); font-weight: 600;">OpenAI Responses:</span>
+            <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-subtle); padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+                <span style="color: var(--text-muted);">OpenAI Responses:</span>
                 <code style="color: #22d3ee;">POST /v1/responses</code>
               </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);">
-                <span style="color: var(--text-muted); font-weight: 600;">OpenAI Chat:</span>
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-subtle); padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+                <span style="color: var(--text-muted);">OpenAI Chat:</span>
                 <code style="color: #38bdf8;">POST /v1/chat/completions</code>
               </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);">
-                <span style="color: var(--text-muted); font-weight: 600;">Anthropic Messages:</span>
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-subtle); padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+                <span style="color: var(--text-muted);">Anthropic Messages:</span>
                 <code style="color: #c084fc;">POST /v1/messages</code>
               </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);">
-                <span style="color: var(--text-muted); font-weight: 600;">Model List:</span>
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-subtle); padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+                <span style="color: var(--text-muted);">Model List:</span>
                 <code style="color: #34d399;">GET /v1/models</code>
               </div>
             </div>
           </div>
         </div>
       </section>
+
       <!-- TAB 2: QUẢN LÝ API KEYS (SHARKPOOL) -->
       <section id="view-keys" class="tab-pane">
-        <div class="card" style="margin-bottom: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
+        <div class="card" style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
             <div>
-              <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-                <span>🔑</span> Sharkpool API Key Manager
-              </h2>
-              <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--text-muted);">
+              <h2 style="margin: 0; font-size: 16px; font-weight: 600; color: #fff;">Sharkpool API Key Manager</h2>
+              <p style="margin: 2px 0 0 0; font-size: 12.5px; color: var(--text-muted);">
                 Cấp phát, quản lý hạn mức và xoay vòng API Key chuẩn OpenAI (<code>sk-[48 ký tự]</code>) cho Client & AI Agent.
               </p>
             </div>
-            <button type="button" class="btn" style="background: var(--accent); color: #fff; font-weight: 600; padding: 8px 16px; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px;" onclick="openCreateKeyModal()">
-              <span>➕</span> Tạo API Key Mới
+            <button type="button" class="btn" onclick="openCreateKeyModal()">
+              Tạo API Key Mới
             </button>
           </div>
           <!-- Keys Table -->
           <div style="overflow-x: auto; border: 1px solid var(--border); border-radius: 8px;">
-            <table class="table" style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+            <table class="table">
               <thead>
-                <tr style="background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--border); color: var(--text-muted);">
-                  <th style="padding: 12px 14px;">Tên Gợi Nhớ (Label)</th>
-                  <th style="padding: 12px 14px;">API Key (Chuẩn sk-...)</th>
-                  <th style="padding: 12px 14px;">Quyền</th>
-                  <th style="padding: 12px 14px;">Lượt Gọi (Usage)</th>
-                  <th style="padding: 12px 14px;">Tokens Tiêu Thụ</th>
-                  <th style="padding: 12px 14px;">Trạng Thái</th>
-                  <th style="padding: 12px 14px;">Ngày Tạo</th>
-                  <th style="padding: 12px 14px; text-align: right;">Thao Tác</th>
+                <tr>
+                  <th>Tên gợi nhớ (Label)</th>
+                  <th>API Key (Chuẩn sk-...)</th>
+                  <th>Quyền</th>
+                  <th>Lượt gọi</th>
+                  <th>Tokens tiêu thụ</th>
+                  <th>Trạng thái</th>
+                  <th>Ngày tạo</th>
+                  <th style="text-align: right;">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="sharkpool-keys-table-body">
                 <tr>
-                  <td colspan="8" style="padding: 30px; text-align: center; color: var(--text-muted);">
+                  <td colspan="8" style="padding: 24px; text-align: center; color: var(--text-muted);">
                     Đang tải danh sách API Keys...
                   </td>
                 </tr>
@@ -242,47 +242,45 @@
           </div>
         </div>
         <!-- Connection Diagnostics Section Mount -->
-        <div id="connection-diagnostics-section" class="card" style="margin-bottom: 24px;"></div>
+        <div id="connection-diagnostics-section" class="card" style="margin-bottom: 20px;"></div>
       </section>
 
       <!-- TAB 3: CHANNELS / UPSTREAM POOL -->
       <section id="view-channels" class="tab-pane">
         <!-- Workspaces Card -->
-        <div class="card" style="margin-bottom: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px;">
+        <div class="card" style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
             <div>
-              <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-                <span>🏢</span> Danh Sách ClickUp Workspaces
-              </h2>
-              <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--text-muted);">
+              <h2 style="margin: 0; font-size: 16px; font-weight: 600; color: #fff;">Danh sách ClickUp Workspaces</h2>
+              <p style="margin: 2px 0 0 0; font-size: 12.5px; color: var(--text-muted);">
                 Workspaces đóng vai trò Upstream Channels cung cấp Quota AI miễn phí.
               </p>
             </div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <button id="clickup-add-ws-btn" type="button" class="btn" style="background: var(--accent); color: #fff; font-weight: 600; padding: 7px 14px; border-radius: 6px; font-size: 12px;">
-                ➕ Thêm Workspace Mới
+              <button id="clickup-add-ws-btn" type="button" class="btn">
+                Thêm Workspace Mới
               </button>
-              <button id="clickup-auto-recreate-btn" type="button" class="btn-ghost" style="padding: 7px 14px; font-size: 12px; color: #c084fc; border-color: rgba(192, 132, 252, 0.4);">
-                ⚡ Tự Động Recreate MAX 23
+              <button id="clickup-auto-recreate-btn" type="button" class="btn-ghost" style="color: #c084fc; border-color: rgba(192, 132, 252, 0.3);">
+                Tự Động Recreate MAX 23
               </button>
             </div>
           </div>
           <div style="overflow-x: auto; border: 1px solid var(--border); border-radius: 8px;">
-            <table id="clickup-workspaces-table" class="table" style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+            <table id="clickup-workspaces-table" class="table">
               <thead>
-                <tr style="background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--border); color: var(--text-muted);">
-                  <th style="padding: 10px 12px;">Workspace ID & Tên</th>
-                  <th style="padding: 10px 12px;">Quota Hôm Nay</th>
-                  <th style="padding: 10px 12px;">Quota Tuần</th>
-                  <th style="padding: 10px 12px;">Thời Hạn Token</th>
-                  <th style="padding: 10px 12px;">In-Flight</th>
-                  <th style="padding: 10px 12px;">Trạng Thái</th>
-                  <th style="padding: 10px 12px; text-align: right;">Thao Tác</th>
+                <tr>
+                  <th>Workspace ID & Tên</th>
+                  <th>Quota Hôm Nay</th>
+                  <th>Quota Tuần</th>
+                  <th>Thời Hạn Token</th>
+                  <th>In-Flight</th>
+                  <th>Trạng Thái</th>
+                  <th style="text-align: right;">Thao Tác</th>
                 </tr>
               </thead>
               <tbody id="clickup-workspaces-table-body">
                 <tr>
-                  <td colspan="7" style="padding: 30px; text-align: center; color: var(--text-muted);">
+                  <td colspan="7" style="padding: 24px; text-align: center; color: var(--text-muted);">
                     Đang nạp dữ liệu ClickUp Workspaces...
                   </td>
                 </tr>
@@ -290,36 +288,35 @@
             </table>
           </div>
         </div>
+
         <!-- Accounts Pool Card -->
-        <div class="card" style="margin-bottom: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px;">
+        <div class="card" style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
             <div>
-              <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-                <span>👥</span> Tài Khoản Mẹ (Accounts Pool)
-              </h2>
-              <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--text-muted);">
+              <h2 style="margin: 0; font-size: 16px; font-weight: 600; color: #fff;">Tài Khoản Mẹ (Accounts Pool)</h2>
+              <p style="margin: 2px 0 0 0; font-size: 12.5px; color: var(--text-muted);">
                 Lưu trữ chuỗi <code>cu_refresh</code> để tự động gia hạn Session Token và tự động tái tạo Workspace khi cạn Quota.
               </p>
             </div>
-            <button id="clickup-add-acc-btn" type="button" class="btn" style="background: #10b981; color: #fff; font-weight: 600; padding: 7px 14px; border-radius: 6px; font-size: 12px;">
-              ➕ Thêm Tài Khoản (cURL / Cookie)
+            <button id="clickup-add-acc-btn" type="button" class="btn" style="background: #10b981;">
+              Thêm Tài Khoản (cURL / Cookie)
             </button>
           </div>
           <div style="overflow-x: auto; border: 1px solid var(--border); border-radius: 8px;">
-            <table id="clickup-accounts-table" class="table" style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+            <table id="clickup-accounts-table" class="table">
               <thead>
-                <tr style="background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--border); color: var(--text-muted);">
-                  <th style="padding: 10px 12px;">Email Tài Khoản</th>
-                  <th style="padding: 10px 12px;">User ID</th>
-                  <th style="padding: 10px 12px;">cu_refresh</th>
-                  <th style="padding: 10px 12px;">Workspaces Liên Kết</th>
-                  <th style="padding: 10px 12px;">Trạng Thái</th>
-                  <th style="padding: 10px 12px; text-align: right;">Thao Tác</th>
+                <tr>
+                  <th>Email Tài Khoản</th>
+                  <th>User ID</th>
+                  <th>cu_refresh</th>
+                  <th>Workspaces Liên Kết</th>
+                  <th>Trạng Thái</th>
+                  <th style="text-align: right;">Thao Tác</th>
                 </tr>
               </thead>
               <tbody id="clickup-accounts-table-body">
                 <tr>
-                  <td colspan="6" style="padding: 30px; text-align: center; color: var(--text-muted);">
+                  <td colspan="6" style="padding: 24px; text-align: center; color: var(--text-muted);">
                     Đang nạp dữ liệu Accounts Pool...
                   </td>
                 </tr>
@@ -328,96 +325,101 @@
           </div>
         </div>
       </section>
+
       <!-- TAB 4: LOGS / LỊCH SỬ GỌI API -->
       <section id="view-logs" class="tab-pane">
-        <div class="card" id="logs-section" style="margin-bottom: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px;">
+        <div class="card" id="logs-section" style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
             <div>
               <div style="display: flex; align-items: center; gap: 8px;">
-                <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: #fff;">
-                  ⚡ Lịch Sử Gọi API & Diagnostics Stream (Realtime)
+                <h2 style="margin: 0; font-size: 16px; font-weight: 600; color: #fff;">
+                  Lịch Sử Gọi API & Diagnostics Stream
                 </h2>
-                <span id="log-live-pulse" class="badge badge-healthy" style="font-size: 10px; text-transform: uppercase;">● Live Stream</span>
+                <span id="log-live-pulse" class="badge badge-healthy" style="font-size: 10px;">Live Stream</span>
               </div>
-              <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--text-muted);">
+              <p style="margin: 2px 0 0 0; font-size: 12.5px; color: var(--text-muted);">
                 Theo dõi trực quan từng request từ ZCode / IDE, số token tiêu thụ, độ trễ và nhật ký kiểm toán hệ thống.
               </p>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <button type="button" id="btn-view-mode-cards" class="btn-ghost" style="padding: 5px 12px; font-size: 12px; background: var(--accent); color: #fff; font-weight: 600;" onclick="toggleLogViewMode('cards')">
-                📋 Trực Quan (Cards)
+              <button type="button" id="btn-view-mode-cards" class="btn-ghost" style="padding: 5px 12px; background: var(--accent); color: #fff;" onclick="toggleLogViewMode('cards')">
+                Thẻ (Cards)
               </button>
-              <button type="button" id="btn-view-mode-table" class="btn-ghost" style="padding: 5px 12px; font-size: 12px;" onclick="toggleLogViewMode('table')">
-                📊 Bảng (Table)
+              <button type="button" id="btn-view-mode-table" class="btn-ghost" style="padding: 5px 12px;" onclick="toggleLogViewMode('table')">
+                Bảng (Table)
               </button>
             </div>
           </div>
+
           <!-- Quick KPI Counters -->
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px;">
-            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 2px;">TỔNG SỐ REQUEST</div>
-              <div id="stat-log-total" style="font-size: 22px; font-weight: 700; color: #38bdf8;">--</div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 16px;">
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Tổng số Request</div>
+              <div id="stat-log-total" style="font-size: 20px; font-weight: 700; color: #38bdf8; margin-top: 2px;">--</div>
             </div>
-            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 2px;">TỶ LỆ THÀNH CÔNG</div>
-              <div id="stat-log-success" style="font-size: 22px; font-weight: 700; color: #34d399;">--%</div>
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Tỷ lệ thành công</div>
+              <div id="stat-log-success" style="font-size: 20px; font-weight: 700; color: #34d399; margin-top: 2px;">--%</div>
             </div>
-            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 2px;">LATENCY TRUNG BÌNH</div>
-              <div id="stat-log-latency" style="font-size: 22px; font-weight: 700; color: #fbbf24;">-- ms</div>
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Latency trung bình</div>
+              <div id="stat-log-latency" style="font-size: 20px; font-weight: 700; color: #fbbf24; margin-top: 2px;">-- ms</div>
             </div>
-            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 2px;">TỔNG TOKEN ƯỚC LƯỢNG</div>
-              <div id="stat-log-tokens" style="font-size: 22px; font-weight: 700; color: #c084fc;">--</div>
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Tokens ước lượng</div>
+              <div id="stat-log-tokens" style="font-size: 20px; font-weight: 700; color: #c084fc; margin-top: 2px;">--</div>
             </div>
           </div>
+
           <!-- Log Toolbar -->
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; background: var(--bg-subtle); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
             <div style="display: flex; gap: 6px;">
-              <button type="button" id="tab-log-requests" class="btn-ghost" style="background: var(--accent); color: #fff; font-weight: 600; font-size: 12px; padding: 6px 14px;">
-                ⚡ Lịch sử Request (<span id="log-count-req">0</span>)
+              <button type="button" id="tab-log-requests" class="btn-ghost" style="background: var(--accent); color: #fff; font-size: 12px; padding: 5px 12px;">
+                Requests (<span id="log-count-req">0</span>)
               </button>
-              <button type="button" id="tab-log-debug" class="btn-ghost" style="font-size: 12px; padding: 6px 14px;">
-                🐞 Debug & Hệ Thống (<span id="log-count-debug">0</span>)
+              <button type="button" id="tab-log-debug" class="btn-ghost" style="font-size: 12px; padding: 5px 12px;">
+                Debug (<span id="log-count-debug">0</span>)
               </button>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <select id="log-filter-outcome" class="form-control" style="width: auto; padding: 6px 10px; font-size: 12px;">
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+              <select id="log-filter-outcome" class="form-control" style="width: auto; padding: 5px 8px; font-size: 11.5px;">
                 <option value="">Tất cả kết quả</option>
-                <option value="success">✅ Thành công (Success)</option>
-                <option value="error">❌ Lỗi (Error)</option>
-                <option value="aborted">⚠️ Bị hủy (Aborted)</option>
+                <option value="success">Thành công (Success)</option>
+                <option value="error">Lỗi (Error)</option>
+                <option value="aborted">Bị hủy (Aborted)</option>
               </select>
-              <label style="font-size: 12px; display: inline-flex; align-items: center; gap: 6px;"><input type="checkbox" id="log-filter-toolonly"> Chỉ toolcall</label>
-              <select id="log-filter-toolparse" class="form-control" style="width: auto; padding: 6px 10px; font-size: 12px;">
-                <option value="">Mọi trạng thái parse</option>
+              <label style="font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted);"><input type="checkbox" id="log-filter-toolonly"> Chỉ toolcall</label>
+              <select id="log-filter-toolparse" class="form-control" style="width: auto; padding: 5px 8px; font-size: 11.5px;">
+                <option value="">Trạng thái parse</option>
                 <option value="ok">Parse ok</option>
-                <option value="none">Khai tool nhưng không trả call</option>
+                <option value="none">Khai tool không trả call</option>
                 <option value="no_tools">Không khai tool</option>
                 <option value="failed">Parse hỏng</option>
               </select>
-              <input type="text" id="log-search-input" class="form-control" placeholder="Lọc theo model, ID, tên tool..." style="width: 180px; padding: 6px 10px; font-size: 12px;">
-              <button type="button" id="btn-log-refresh" class="btn-ghost" style="padding: 6px 12px; font-size: 12px;">🔄 Làm mới</button>
-              <button type="button" id="btn-log-pause" class="btn-ghost" style="padding: 6px 12px; font-size: 12px; color: #34d399; font-weight: 600;">🟢 Tự cập nhật (2s)</button>
+              <input type="text" id="log-search-input" class="form-control" placeholder="Tìm model, ID, tool..." style="width: 160px; padding: 5px 8px; font-size: 11.5px;">
+              <button type="button" id="btn-log-refresh" class="btn-ghost" style="padding: 5px 10px; font-size: 11.5px;">Làm mới</button>
+              <button type="button" id="btn-log-pause" class="btn-ghost" style="padding: 5px 10px; font-size: 11.5px; color: #34d399;">Tự cập nhật (2s)</button>
             </div>
           </div>
+
           <!-- Cards View Container -->
-          <div id="log-cards-container" style="display: flex; flex-direction: column; gap: 10px; max-height: 520px; overflow-y: auto; padding-right: 4px;">
+          <div id="log-cards-container" style="display: flex; flex-direction: column; gap: 8px; max-height: 520px; overflow-y: auto;">
             <div style="padding: 24px; text-align: center; color: var(--text-muted);">Đang tải nhật ký...</div>
           </div>
+
           <!-- Table View Container -->
           <div id="log-table-container" style="display: none; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; max-height: 480px; overflow-y: auto;">
-            <table class="table" style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+            <table class="table">
               <thead>
-                <tr style="background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--border); color: var(--text-muted);">
-                  <th style="padding: 10px 12px;">Thời Gian</th>
-                  <th style="padding: 10px 12px;">Method & Route</th>
-                  <th style="padding: 10px 12px;">Model Gọi</th>
-                  <th style="padding: 10px 12px;">Model Thực Thi</th>
-                  <th style="padding: 10px 12px;">Độ Trễ / TTFT</th>
-                  <th style="padding: 10px 12px;">Tokens (In/Out)</th>
-                  <th style="padding: 10px 12px;">Kết Quả</th>
-                  <th style="padding: 10px 12px; text-align: right;">Chi Tiết</th>
+                <tr>
+                  <th>Thời gian</th>
+                  <th>Route</th>
+                  <th>Model gọi</th>
+                  <th>Model thực thi</th>
+                  <th>Độ trễ / TTFT</th>
+                  <th>Tokens</th>
+                  <th>Kết quả</th>
+                  <th style="text-align: right;">Chi tiết</th>
                 </tr>
               </thead>
               <tbody id="log-table-body">
@@ -425,6 +427,7 @@
               </tbody>
             </table>
           </div>
+
           <!-- Debug Terminal Container -->
           <div id="log-debug-container" style="display: none; background: #070a12; border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 480px; overflow-y: auto;">
             <div id="log-debug-output" style="font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.5; color: #93c5fd;">
@@ -434,148 +437,146 @@
         </div>
       </section>
 
-      <!-- TAB 5: CÀI ĐẶT & PLAYGROUND -->
+      <!-- TAB 5: CÀI ĐẶT & LAB -->
       <section id="view-settings" class="tab-pane">
         <!-- System Auth & Settings Box -->
-        <div class="card" style="margin-bottom: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <h2 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-            <span>⚙️</span> Cấu Hình Hệ Thống & Master Admin
+        <div class="card" style="margin-bottom: 20px;">
+          <h2 style="margin: 0 0 14px 0; font-size: 16px; font-weight: 600; color: #fff;">
+            Cấu hình hệ thống & Master Admin
           </h2>
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 16px;">
-            <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">XÁC THỰC QUẢN TRỊ</div>
-              <div style="font-family: var(--font-mono, monospace); font-size: 14px; font-weight: 700; color: #34d399; margin: 4px 0;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 16px;">
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Xác thực quản trị</div>
+              <div style="font-family: var(--font-mono, monospace); font-size: 13px; font-weight: 600; color: #34d399; margin: 4px 0;">
                 Gateway API Key / CLICKQUOTA_MASTER_PASSWORD
               </div>
-              <div style="font-size: 11px; color: var(--text-muted);">Mã khóa không còn hiển thị sẵn: operator nhập một lần vào phiên (nút 🔑). Master password (nếu dùng) đặt qua biến môi trường trên server.</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Mã khóa bảo mật: operator nhập một lần vào phiên (nút Khóa). Master password đặt qua biến môi trường server.</div>
             </div>
-            <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
-              <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">GATEWAY ENDPOINT</div>
-              <div style="font-family: var(--font-mono, monospace); font-size: 16px; font-weight: 700; color: #38bdf8; margin: 4px 0;">
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px;">
+              <div style="font-size: 10.5px; color: var(--text-subtle); text-transform: uppercase;">Gateway Endpoint</div>
+              <div style="font-family: var(--font-mono, monospace); font-size: 14px; font-weight: 600; color: #38bdf8; margin: 4px 0;">
                 http://127.0.0.1:4310
               </div>
               <div style="font-size: 11px; color: var(--text-muted);">Lắng nghe trực tiếp trên Loopback Adapter.</div>
             </div>
           </div>
-          <h3 style="font-size: 14px; font-weight: 700; color: #fff; margin: 20px 0 10px 0;">💻 Lệnh cURL Mẫu Gọi API Client (Tự Động Nhúng Key)</h3>
-          <div style="position: relative; background: #070a12; border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+
+          <h3 style="font-size: 13px; font-weight: 600; color: #fff; margin: 16px 0 8px 0;">Lệnh cURL mẫu gọi API</h3>
+          <div style="position: relative; background: #070a12; border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
             <pre id="curl-example-code" style="margin: 0; font-family: var(--font-mono, monospace); font-size: 11px; color: #93c5fd; white-space: pre-wrap; line-height: 1.5;"></pre>
-            <button type="button" class="btn-ghost" style="position: absolute; top: 10px; right: 10px; font-size: 11px; padding: 4px 10px;" onclick="copyCurlExample()">📋 Copy</button>
+            <button type="button" class="btn-ghost" style="position: absolute; top: 8px; right: 8px; font-size: 11px; padding: 3px 8px;" onclick="copyCurlExample()">Copy</button>
           </div>
         </div>
 
         <!-- Super Agent & Playground Box -->
-        <div class="card playground-box" style="padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <span style="font-size: 24px;">🤖</span>
-              <div>
-                <h2 id="agent-playground-title" style="margin: 0; font-size: 17px; font-weight: 700; color: #fff;">
-                  ClickUp Super Agent & AI Model Playground
-                </h2>
-                <div style="font-size: 12px; color: var(--text-muted);">
-                  Thử nghiệm trực tiếp năng lực Agent (Tool Calling, Reasoning, Prompt Injection) gọi từ bên ngoài vào ClickUp Gateway.
-                </div>
+        <div class="card playground-box" style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+            <div>
+              <h2 id="agent-playground-title" style="margin: 0; font-size: 16px; font-weight: 600; color: #fff;">
+                Super Agent & Model Playground
+              </h2>
+              <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                Thử nghiệm trực tiếp năng lực Agent (Tool Calling, Reasoning, Continuation) qua ClickUp Gateway.
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <label style="font-size: 12px; color: var(--text-muted);">Chế độ:</label>
-              <select id="pg-mode" class="form-control" style="width: auto; padding: 4px 10px; font-size: 12px;">
-                <option value="agent">🤖 Super Agent (Tool Calling Roo-Cline)</option>
-                <option value="chat" selected>💬 Chat Trực Tiếp (Standard)</option>
-                <option value="tools_completion">🛠️ TOOLS_COMPLETION ClickUp Mode</option>
+              <select id="pg-mode" class="form-control" style="width: auto; padding: 4px 8px; font-size: 12px;">
+                <option value="agent">Super Agent (Tool Calling)</option>
+                <option value="chat" selected>Chat trực tiếp (Standard)</option>
+                <option value="tools_completion">TOOLS_COMPLETION ClickUp Mode</option>
               </select>
             </div>
           </div>
-          <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px;">
+
+          <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 14px;">
             <div>
-              <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Nội dung Prompt gửi thử nghiệm:</label>
-              <textarea id="pg-prompt" rows="4" class="form-control" style="width: 100%; box-sizing: border-box; font-size: 13px; line-height: 1.4;" placeholder="Nhập câu hỏi hoặc chỉ thị cho Agent..."></textarea>
+              <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Prompt thử nghiệm:</label>
+              <textarea id="pg-prompt" rows="4" class="form-control" style="width: 100%; box-sizing: border-box; font-size: 12.5px; line-height: 1.4;" placeholder="Nhập câu hỏi hoặc chỉ thị cho Agent..."></textarea>
             </div>
             <div>
-              <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Chọn Model Upstream ClickUp:</label>
-              <select id="pg-model" class="form-control" style="width: 100%; margin-bottom: 10px;">
+              <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Model ClickUp Upstream:</label>
+              <select id="pg-model" class="form-control" style="width: 100%; margin-bottom: 8px;">
                 <option value="gpt-6.1-sol-CL">gpt-6.1-sol-CL (ClickUp Fast Reasoning)</option>
                 <option value="claude-sonnet-5-5-CL">claude-sonnet-5-5-CL (Claude 3.5 Sonnet)</option>
                 <option value="super-agent-CL" selected>super-agent-CL (ClickUp Super Agent Pro)</option>
                 <option value="o3-mini-CL">o3-mini-CL (ClickUp o3 mini)</option>
                 <option value="gemini-3.0-flash-CL">gemini-3.0-flash-CL (Flash 2.0/3.0)</option>
               </select>
-              <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Thử nghiệm qua Workspace chỉ định:</label>
-              <select id="pg-ws-select" class="form-control" style="width: 100%; margin-bottom: 12px;">
-                <option value="">-- Tự động chọn Workspace tối ưu nhất --</option>
+              <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Workspace:</label>
+              <select id="pg-ws-select" class="form-control" style="width: 100%; margin-bottom: 10px;">
+                <option value="">Tự động chọn Workspace tối ưu</option>
               </select>
-              <button id="pg-btn-send" type="button" class="btn" style="width: 100%; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: #fff; font-weight: 600; padding: 10px; border-radius: 6px;">
-                🚀 Gửi Request Thử Nghiệm
+              <button id="pg-btn-send" type="button" class="btn" style="width: 100%; padding: 8px;">
+                Gửi Request Thử Nghiệm
               </button>
             </div>
           </div>
+
           <!-- Playground Result Box -->
           <div id="pg-spinner" style="display: none; padding: 20px; text-align: center; color: var(--text-muted);">
-            ⏳ Đang gửi request tới ClickUp Gateway & chờ phản hồi...
+            Đang gửi request tới ClickUp Gateway & chờ phản hồi...
           </div>
-          <div id="pg-result-card" style="display: none; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 16px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+          <div id="pg-result-card" style="display: none; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span id="pg-res-badge" class="badge badge-healthy">200 OK</span>
-                <span id="pg-res-time" style="font-size: 12px; color: #fbbf24; font-weight: 600;">⚡ -- ms</span>
+                <span id="pg-res-time" style="font-size: 12px; color: #fbbf24; font-weight: 600;">-- ms</span>
                 <span id="pg-res-model" style="font-size: 12px; color: var(--text-muted);">Model: --</span>
                 <span id="pg-res-ws" style="font-size: 12px; color: #a78bfa;">Workspace: --</span>
               </div>
             </div>
             <!-- Thinking Output -->
-            <div id="pg-box-thinking" style="display: none; margin-bottom: 10px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 6px; padding: 10px;">
-              <div style="font-size: 11px; font-weight: 700; color: #fbbf24; margin-bottom: 4px;">🧠 SUY NGHĨ / REASONING CỦA MODEL:</div>
+            <div id="pg-box-thinking" style="display: none; margin-bottom: 8px; background: rgba(245, 158, 11, 0.06); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; padding: 8px;">
+              <div style="font-size: 10.5px; font-weight: 700; color: #fbbf24; margin-bottom: 4px;">REASONING CỦA MODEL:</div>
               <pre id="pg-res-thinking" style="margin: 0; font-family: var(--font-mono, monospace); font-size: 11px; color: #fde68a; white-space: pre-wrap; max-height: 160px; overflow-y: auto;"></pre>
             </div>
             <!-- Tool Calls Output -->
-            <div id="pg-box-tools" style="display: none; margin-bottom: 10px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 6px; padding: 10px;">
-              <div style="font-size: 11px; font-weight: 700; color: #c084fc; margin-bottom: 4px;">🛠️ TOOL CALLS ĐƯỢC PHÁT HIỆN:</div>
+            <div id="pg-box-tools" style="display: none; margin-bottom: 8px; background: rgba(168, 85, 247, 0.06); border: 1px solid rgba(168, 85, 247, 0.2); border-radius: 6px; padding: 8px;">
+              <div style="font-size: 10.5px; font-weight: 700; color: #c084fc; margin-bottom: 4px;">TOOL CALLS:</div>
               <pre id="pg-res-tools" style="margin: 0; font-family: var(--font-mono, monospace); font-size: 11px; color: #e9d5ff; white-space: pre-wrap; max-height: 160px; overflow-y: auto;"></pre>
             </div>
             <!-- Reply Content -->
             <div>
-              <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">💬 NỘI DUNG PHẢN HỒI (REPLY):</div>
+              <div style="font-size: 10.5px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">NỘI DUNG PHẢN HỒI:</div>
               <pre id="pg-res-reply" style="margin: 0; font-family: var(--font-mono, monospace); font-size: 12px; color: #f1f5f9; white-space: pre-wrap; max-height: 250px; overflow-y: auto;"></pre>
             </div>
             <!-- Raw GraphQL Accordion -->
-            <div style="margin-top: 10px;">
-              <button type="button" class="btn-ghost" style="padding: 3px 8px; font-size: 11px;" onclick="const el = document.getElementById('pg-res-raw'); el.style.display = el.style.display === 'none' ? 'block' : 'none';">
-                🔍 Xem toàn bộ GraphQL Raw Response
+            <div style="margin-top: 8px;">
+              <button type="button" class="btn-ghost" style="padding: 2px 6px; font-size: 10.5px;" onclick="const el = document.getElementById('pg-res-raw'); el.style.display = el.style.display === 'none' ? 'block' : 'none';">
+                Xem toàn bộ GraphQL Raw
               </button>
-              <pre id="pg-res-raw" style="display: none; margin-top: 6px; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: var(--font-mono, monospace); font-size: 10px; color: #94a3b8; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></pre>
+              <pre id="pg-res-raw" style="display: none; margin-top: 6px; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: var(--font-mono, monospace); font-size: 10px; color: #94a3b8; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></pre>
             </div>
           </div>
         </div>
-        </div>
 
         <!-- Client config presets + SSE regression + admin action log -->
-        <div class="card" style="margin-top: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
-          <h2 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 700; color: #fff;">🔌 Cấu Hình Client & Kiểm Tra</h2>
+        <div class="card" style="margin-top: 20px;">
+          <h2 style="margin: 0 0 14px 0; font-size: 16px; font-weight: 600; color: #fff;">Cấu Hình Client & Kiểm Tra</h2>
           <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Preset client:</label>
-          <select id="cc-preset" class="form-control" style="width: 100%; margin-bottom: 12px;" onchange="renderClientConfig()">
+          <select id="cc-preset" class="form-control" style="width: 100%; margin-bottom: 10px;" onchange="renderClientConfig()">
             <option value="nine-router">9router (OpenAI Compatible)</option>
             <option value="ide-openai">IDE / client OpenAI</option>
             <option value="anthropic">Claude Code / client Anthropic</option>
             <option value="curl">curl thô</option>
           </select>
-          <div style="font-size: 13px; line-height: 1.6; margin-bottom: 8px;">Base URL: <code id="cc-base" style="color: #38bdf8;"></code> • Model mẫu: <code id="cc-model" style="color: #a78bfa;"></code></div>
-          <div id="cc-note" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;"></div>
-          <div id="cc-keyinfo" style="font-size: 12px; color: #fbbf24; margin-bottom: 8px;"></div>
-          <pre id="cc-config" style="background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; color: #93c5fd; white-space: pre-wrap;"></pre>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
-            <button type="button" class="btn-ghost" onclick="copyClientConfig()">📋 Copy cấu hình</button>
-            <button type="button" class="btn-ghost" onclick="testClientKey()">✅ Test key với /v1/models</button>
-            <button type="button" class="btn-ghost" onclick="runSseRegression()">🧪 Test hồi quy stream toolcall dài</button>
-            <button type="button" class="btn-ghost" onclick="loadAdminActions()">📋 Xem nhật ký hành động admin</button>
+          <div style="font-size: 12.5px; line-height: 1.6; margin-bottom: 6px;">Base URL: <code id="cc-base" style="color: #38bdf8;"></code> • Model mẫu: <code id="cc-model" style="color: #a78bfa;"></code></div>
+          <div id="cc-note" style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px;"></div>
+          <div id="cc-keyinfo" style="font-size: 11.5px; color: #fbbf24; margin-bottom: 6px;"></div>
+          <pre id="cc-config" style="background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: monospace; font-size: 11px; color: #93c5fd; white-space: pre-wrap;"></pre>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
+            <button type="button" class="btn-ghost" onclick="copyClientConfig()">Copy cấu hình</button>
+            <button type="button" class="btn-ghost" onclick="testClientKey()">Test key với /v1/models</button>
+            <button type="button" class="btn-ghost" onclick="runSseRegression()">Test hồi quy stream toolcall dài</button>
+            <button type="button" class="btn-ghost" onclick="loadAdminActions()">Xem nhật ký hành động admin</button>
           </div>
-          <div id="cc-test-result" style="font-size: 12px; margin-top: 8px;"></div>
-          <div id="pg-regression-result" style="font-size: 12px; margin-top: 8px;"></div>
-          <pre id="admin-actions-list" style="margin-top: 8px; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; color: #93c5fd; white-space: pre-wrap; max-height: 200px; overflow-y: auto;">Bấm "Xem nhật ký hành động admin" để tải.</pre>
+          <div id="cc-test-result" style="font-size: 11.5px; margin-top: 6px;"></div>
+          <div id="pg-regression-result" style="font-size: 11.5px; margin-top: 6px;"></div>
+          <pre id="admin-actions-list" style="margin-top: 6px; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: monospace; font-size: 11px; color: #93c5fd; white-space: pre-wrap; max-height: 180px; overflow-y: auto;">Bấm "Xem nhật ký hành động admin" để tải.</pre>
           <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">Bảo mật: để tách quyền admin khỏi key gateway, đặt biến môi trường CLICKQUOTA_ADMIN_KEY trên server rồi khởi động lại. Khi đã đặt, key gateway chỉ dùng cho client gọi /v1, không còn quyền admin. Sau 10 lần thử key admin sai trong 5 phút, IP đó bị khóa 5 phút.</div>
         </div>
       </section>
-
     </main>
   </div>
 </div>
@@ -583,42 +584,38 @@
 <!-- MODAL: TẠO API KEY MỚI -->
 <div id="modal-create-key" class="modal-backdrop" style="display: none;">
   <div class="modal-dialog">
-    <div style="padding: 18px 22px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-      <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-        <span>🔑</span> Tạo API Key Mới (Chuẩn OpenAI)
-      </h3>
-      <button type="button" class="btn-ghost" style="border: none; font-size: 18px; cursor: pointer; color: var(--text-muted);" onclick="closeCreateKeyModal()">✕</button>
+    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+      <h3 style="margin: 0; font-size: 15px; font-weight: 600; color: #fff;">Tạo API Key Mới (Chuẩn OpenAI)</h3>
+      <button type="button" class="btn-ghost" style="border: none; font-size: 16px; color: var(--text-muted);" onclick="closeCreateKeyModal()">✕</button>
     </div>
-    <div style="padding: 22px;">
-      <div style="margin-bottom: 14px;">
-        <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Tên gợi nhớ (Label):</label>
-        <input type="text" id="new-key-label" class="form-control" placeholder="Ví dụ: Cline Cursor Dev Key" style="width: 100%; box-sizing: border-box;">
+    <div style="padding: 20px;">
+      <div style="margin-bottom: 12px;">
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Tên gợi nhớ (Label):</label>
+        <input type="text" id="new-key-label" class="form-control" placeholder="Ví dụ: Cline Cursor Dev Key" style="width: 100%;">
       </div>
-      <div style="margin-bottom: 14px;">
-        <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Quyền hạn (Role):</label>
-        <select id="new-key-role" class="form-control" style="width: 100%; box-sizing: border-box;">
+      <div style="margin-bottom: 12px;">
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Quyền hạn (Role):</label>
+        <select id="new-key-role" class="form-control" style="width: 100%;">
           <option value="user" selected>User (Gọi AI Client /v1/...)</option>
           <option value="admin">Admin (Toàn quyền quản trị & gọi AI)</option>
         </select>
       </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px;">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
         <div>
-          <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Hạn mức lượt gọi (Requests):</label>
-          <input type="number" id="new-key-req-limit" class="form-control" placeholder="Để trống nếu vô hạn" style="width: 100%; box-sizing: border-box;">
+          <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Hạn mức lượt gọi (Requests):</label>
+          <input type="number" id="new-key-req-limit" class="form-control" placeholder="Để trống nếu vô hạn" style="width: 100%;">
         </div>
         <div>
-          <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Hạn mức Token (Tokens):</label>
-          <input type="number" id="new-key-token-limit" class="form-control" placeholder="Để trống nếu vô hạn" style="width: 100%; box-sizing: border-box;">
+          <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Hạn mức Token (Tokens):</label>
+          <input type="number" id="new-key-token-limit" class="form-control" placeholder="Để trống nếu vô hạn" style="width: 100%;">
         </div>
       </div>
-      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 18px; background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.2); padding: 8px 12px; border-radius: 6px;">
-        💡 Key được sinh sẽ bắt đầu bằng <code>sk-</code> kèm 48 ký tự alphanumeric ngẫu nhiên bảo mật cao theo chuẩn OpenAI & Sharkpool.
+      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 16px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.2); padding: 8px 12px; border-radius: 6px;">
+        Key được sinh sẽ bắt đầu bằng <code>sk-</code> kèm 48 ký tự alphanumeric ngẫu nhiên bảo mật cao.
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 10px;">
-        <button type="button" class="btn-ghost" style="padding: 8px 16px;" onclick="closeCreateKeyModal()">Hủy</button>
-        <button type="button" class="btn" style="background: var(--accent); color: #fff; font-weight: 600; padding: 8px 18px;" onclick="submitCreateKey()">
-          ⚡ Tạo Key Ngay
-        </button>
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button type="button" class="btn-ghost" onclick="closeCreateKeyModal()">Hủy</button>
+        <button type="button" class="btn" onclick="submitCreateKey()">Tạo Key</button>
       </div>
     </div>
   </div>
@@ -627,17 +624,17 @@
 <!-- MODAL: THÊM WORKSPACE CLICKUP -->
 <div id="clickup-add-ws-modal" class="modal-backdrop" style="display: none;">
   <div class="modal-dialog">
-    <div style="padding: 18px 22px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-      <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #fff;">🏢 Thêm ClickUp Workspace Mới</h3>
-      <button type="button" class="btn-ghost" style="border: none; font-size: 18px; cursor: pointer; color: var(--text-muted);" onclick="document.getElementById('clickup-add-ws-modal').style.display='none'">✕</button>
+    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+      <h3 style="margin: 0; font-size: 15px; font-weight: 600; color: #fff;">Thêm ClickUp Workspace Mới</h3>
+      <button type="button" class="btn-ghost" style="border: none; font-size: 16px; color: var(--text-muted);" onclick="document.getElementById('clickup-add-ws-modal').style.display='none'">✕</button>
     </div>
-    <div style="padding: 22px;">
+    <div style="padding: 20px;">
       <div style="margin-bottom: 12px;">
-        <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Dán lệnh cURL từ Trình duyệt (F12 > Network):</label>
-        <textarea id="clickup-ws-rawcurl" rows="3" class="form-control" style="width: 100%; box-sizing: border-box; font-size: 11px;" placeholder="curl 'https://frontdoor-search.clickup-sg.com/graphql/gateway' -H 'authorization: Bearer eyJ...'"></textarea>
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Dán lệnh cURL từ Trình duyệt (F12 > Network):</label>
+        <textarea id="clickup-ws-rawcurl" rows="3" class="form-control" style="width: 100%; font-size: 11px;" placeholder="curl 'https://frontdoor-search.clickup-sg.com/graphql/gateway' -H 'authorization: Bearer eyJ...'"></textarea>
       </div>
       <div style="margin-bottom: 12px;">
-        <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Hoặc nhập thủ công Token / Workspace ID:</label>
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Hoặc nhập thủ công Token / Workspace ID:</label>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
           <input type="text" id="clickup-ws-id" class="form-control" placeholder="Workspace ID (VD: 9015...)">
           <input type="text" id="clickup-ws-label" class="form-control" placeholder="Tên gợi nhớ">
@@ -646,9 +643,9 @@
       <div style="margin-bottom: 14px;">
         <input type="text" id="clickup-ws-token" class="form-control" placeholder="Session Token (eyJhbGciOi...)">
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 10px;">
-        <button type="button" class="btn-ghost" style="padding: 8px 16px;" onclick="document.getElementById('clickup-add-ws-modal').style.display='none'">Hủy</button>
-        <button id="clickup-ws-save-btn" type="button" class="btn" style="background: var(--accent); color: #fff; font-weight: 600; padding: 8px 18px;">Lưu Workspace</button>
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button type="button" class="btn-ghost" onclick="document.getElementById('clickup-add-ws-modal').style.display='none'">Hủy</button>
+        <button id="clickup-ws-save-btn" type="button" class="btn">Lưu Workspace</button>
       </div>
     </div>
   </div>
@@ -657,27 +654,27 @@
 <!-- MODAL: THÊM / CẬP NHẬT TÀI KHOẢN MẸ CU_REFRESH -->
 <div id="clickup-add-acc-modal" class="modal-backdrop" style="display: none;">
   <div class="modal-dialog">
-    <div style="padding: 18px 22px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-      <h3 id="clickup-add-acc-title" style="margin: 0; font-size: 16px; font-weight: 700; color: #fff;">👥 Thêm / Cập Nhật Tài Khoản Mẹ (cu_refresh)</h3>
-      <button type="button" class="btn-ghost" style="border: none; font-size: 18px; cursor: pointer; color: var(--text-muted);" onclick="document.getElementById('clickup-add-acc-modal').style.display='none'">✕</button>
+    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+      <h3 id="clickup-add-acc-title" style="margin: 0; font-size: 15px; font-weight: 600; color: #fff;">Thêm / Cập Nhật Tài Khoản Mẹ (cu_refresh)</h3>
+      <button type="button" class="btn-ghost" style="border: none; font-size: 16px; color: var(--text-muted);" onclick="document.getElementById('clickup-add-acc-modal').style.display='none'">✕</button>
     </div>
-    <div style="padding: 22px;">
+    <div style="padding: 20px;">
       <div style="margin-bottom: 12px;">
-        <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Dán lệnh cURL hoặc chuỗi Cookie chứa cu_refresh:</label>
-        <textarea id="clickup-acc-rawcurl" rows="3" class="form-control" style="width: 100%; box-sizing: border-box; font-size: 11px;" placeholder="Dán lệnh curl hoặc cu_refresh=eyJhbGci..."></textarea>
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Dán lệnh cURL hoặc chuỗi Cookie chứa cu_refresh:</label>
+        <textarea id="clickup-acc-rawcurl" rows="3" class="form-control" style="width: 100%; font-size: 11px;" placeholder="Dán lệnh curl hoặc cu_refresh=eyJhbGci..."></textarea>
       </div>
       <div style="margin-bottom: 12px;">
-        <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Hoặc dán trực tiếp giá trị cu_refresh:</label>
-        <textarea id="clickup-acc-curefresh" rows="2" class="form-control" style="width: 100%; box-sizing: border-box; font-size: 11px;" placeholder="cu_refresh=eyJhbGciOi..."></textarea>
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Hoặc dán trực tiếp giá trị cu_refresh:</label>
+        <textarea id="clickup-acc-curefresh" rows="2" class="form-control" style="width: 100%; font-size: 11px;" placeholder="cu_refresh=eyJhbGciOi..."></textarea>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px;">
         <input type="text" id="clickup-acc-email" class="form-control" placeholder="Email (tùy chọn)">
         <input type="text" id="clickup-acc-label" class="form-control" placeholder="Tên gợi nhớ">
       </div>
       <input type="hidden" id="clickup-acc-userid">
-      <div style="display: flex; justify-content: flex-end; gap: 10px;">
-        <button type="button" class="btn-ghost" style="padding: 8px 16px;" onclick="document.getElementById('clickup-add-acc-modal').style.display='none'">Hủy</button>
-        <button id="clickup-acc-save-btn" type="button" class="btn" style="background: #10b981; color: #fff; font-weight: 600; padding: 8px 18px;">Xác Thực & Lưu</button>
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button type="button" class="btn-ghost" onclick="document.getElementById('clickup-add-acc-modal').style.display='none'">Hủy</button>
+        <button id="clickup-acc-save-btn" type="button" class="btn" style="background: #10b981;">Xác Thực & Lưu</button>
       </div>
     </div>
   </div>
@@ -685,6 +682,5 @@
 
 <script src="/admin/connection.js"></script>
 <script src="/admin/admin.js"></script>
-
 </body>
 </html>
