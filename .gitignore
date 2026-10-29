@@ -6,3 +6,4 @@ node_modules/
 
 # One-off experiments, patches, backups (SOP runner lives here - see docs caveat)
 scratch/
+*.bundle
