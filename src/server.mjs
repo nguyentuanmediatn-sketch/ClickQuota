@@ -10,6 +10,7 @@ import { CLICKUP_MODELS } from './providers/clickup/upstream.mjs';
 import { getUpstreamTelemetry } from './providers/clickup/telemetry.mjs';
 import { normalizeResponsesRequest } from './protocols/openai-responses.mjs';
 import { listKeys, createKey, toggleKey, deleteKey, isKeyAuthorized, recordKeyUsage, generateOpenAIKey, isMasterSecret } from './key-store.mjs';
+import { emitOpenAiToolCallDeltas } from './providers/clickup/sse-emitter.mjs';
 
 function json(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -57,13 +58,43 @@ export function authorized(req, key) {
   return false;
 }
 
+
+// ── Admin auth hardening (2026-10-29): tách key admin khỏi key gateway + giới hạn thử key ──
+// Nếu đặt CLICKQUOTA_ADMIN_KEY: chỉ key admin đó (hoặc master password, hoặc store key
+// role admin, hoặc truy cập local) mới có quyền admin; key gateway lúc này CHỈ dùng cho
+// client gọi /v1, không leo thang lên admin. Nếu không đặt: giữ hành vi cũ để không khóa
+// admin hiện tại, và /admin/api/connection báo adminKeySeparated=false để nhắc cấu hình.
+const adminFailures = new Map(); // ip -> { count, firstAt, blockedUntil }
+function adminClientIp(req) { return req.socket?.remoteAddress || 'unknown'; }
+function isAdminBlocked(req) {
+  const e = adminFailures.get(adminClientIp(req));
+  return Boolean(e && e.blockedUntil && Date.now() < e.blockedUntil);
+}
+function recordAdminFailure(req) {
+  const ip = adminClientIp(req);
+  const now = Date.now();
+  let e = adminFailures.get(ip);
+  if (!e || now - e.firstAt > 300000) e = { count: 0, firstAt: now, blockedUntil: 0 };
+  e.count += 1;
+  if (e.count >= 10) e.blockedUntil = now + 300000; // 10 lần sai trong 5 phút -> khóa 5 phút
+  adminFailures.set(ip, e);
+}
+function adminRateGate(req, res) {
+  // Local admin (loopback, không forwarded header) không bị khóa bởi rate limit:
+  // nếu không, kẻ tấn công qua tunnel cũng khóa được cả operator local.
+  if (isLocalAdmin(req)) return true;
+  if (isAdminBlocked(req)) { json(res, 429, { error: 'Too many failed admin attempts, try again later' }); return false; }
+  return true;
+}
 export function adminAuthorized(req, key) {
   if (isLocalAdmin(req)) return true;
   const supplied = extractSuppliedToken(req);
   // Master password chỉ tồn tại nếu được cấu hình qua CLICKQUOTA_MASTER_PASSWORD.
   if (isMasterSecret(supplied)) return true;
-  // Gateway key (env/admin-settings) là credential của operator.
-  if (key && timingSafeCompare(supplied, key)) return true;
+  const dedicatedAdminKey = process.env.CLICKQUOTA_ADMIN_KEY || '';
+  if (dedicatedAdminKey && timingSafeCompare(supplied, dedicatedAdminKey)) return true;
+  // Khi đã tách key admin: key gateway KHÔNG còn quyền admin (chống leo thang khi lộ key gateway).
+  if (!dedicatedAdminKey && key && timingSafeCompare(supplied, key)) return true;
   // Store key chỉ có quyền admin khi role === 'admin' — user key KHÔNG được leo thang.
   const storeAuth = isKeyAuthorized(supplied);
   return Boolean(storeAuth && storeAuth.ok && storeAuth.role === 'admin');
@@ -122,6 +153,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       notifier.recordRequest({ outcome, durationMs });
       auditLogs.request({ timestamp: new Date().toISOString(), requestId, method: req.method, path: routePath,
         protocol: routePath === '/v1/messages' ? 'anthropic' : 'openai', requestedModel: diagnostics.requestedModel,
+        toolNames: diagnostics.toolNames, declaredToolNames: diagnostics.declaredToolNames, toolCount: diagnostics.toolCount, toolArgLengths: diagnostics.toolArgLengths, finishReason: diagnostics.finishReason, toolParseStatus: diagnostics.toolParseStatus,
         resolvedModel: diagnostics.model, workspaceId: diagnostics.workspaceId, stream: diagnostics.stream || false, status: res.statusCode,
         durationMs, ttftMs: diagnostics.ttftMs, inputTokens: diagnostics.inputTokens, outputTokens: diagnostics.outputTokens, outcome });
       if (outcome !== 'success') auditLogs.debug({ requestId, code: outcome === 'aborted' ? 'request_aborted' : 'request_error', level: 'error' });
@@ -218,9 +250,10 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       if (route === '/admin/api/connection' || route === '/admin/api/key' || route === '/admin/api/logs') {
         res.setHeader('cache-control', 'no-store');
         const local = isLocalAdmin(req);
-        if (!adminAuthorized(req, config.apiKey)) return json(res, 401, { error: 'Unauthorized' });
+        if (!adminRateGate(req, res)) return;
+        if (!adminAuthorized(req, config.apiKey)) { recordAdminFailure(req); return json(res, 401, { error: 'Unauthorized' }); }
         if (route === '/admin/api/connection' && req.method === 'GET') {
-          return json(res, 200, { keyConfigured: Boolean(config.apiKey), keySource: config.keySource || (config.apiKey ? 'environment' : 'none'), rotationAllowed: !config.envKeyControlled && (!config.apiKey || config.keySource === 'admin-settings'), models: CLICKUP_MODELS, masterAuthEnabled: Boolean(process.env.CLICKQUOTA_MASTER_PASSWORD) });
+          return json(res, 200, { keyConfigured: Boolean(config.apiKey), keySource: config.keySource || (config.apiKey ? 'environment' : 'none'), rotationAllowed: !config.envKeyControlled && (!config.apiKey || config.keySource === 'admin-settings'), models: CLICKUP_MODELS, masterAuthEnabled: Boolean(process.env.CLICKQUOTA_MASTER_PASSWORD), adminKeySeparated: Boolean(process.env.CLICKQUOTA_ADMIN_KEY) });
         }
         if (route === '/admin/api/key' && req.method === 'GET') {
           if (!local) return json(res, 403, { error: 'Local administrative access required to view key' });
@@ -228,13 +261,16 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
           return json(res, 200, {
             ok: true,
             keyConfigured: Boolean(config.apiKey),
+            keyLength: config.apiKey ? config.apiKey.length : 0,
+            keyPrefix: config.apiKey ? config.apiKey.slice(0, 3) : '',
+            keySuffix: config.apiKey ? config.apiKey.slice(-4) : '',
             masked: config.apiKey ? (config.apiKey.length > 12 ? config.apiKey.slice(0, 7) + '••••••••' + config.apiKey.slice(-4) : '••••••••') : '',
             keySource: config.keySource || (config.apiKey ? 'environment' : 'none'),
             rotationAllowed: !config.envKeyControlled && (!config.apiKey || config.keySource === 'admin-settings'),
           });
         }
         if (route === '/admin/api/logs' && req.method === 'GET') {
-          const options = { limit: url.searchParams.get('limit'), requestId: url.searchParams.get('requestId'), code: url.searchParams.get('code'), outcome: url.searchParams.get('outcome') };
+          const options = { limit: url.searchParams.get('limit'), requestId: url.searchParams.get('requestId'), code: url.searchParams.get('code'), outcome: url.searchParams.get('outcome'), toolOnly: url.searchParams.get('toolOnly') === '1', toolParseStatus: url.searchParams.get('toolParseStatus') || '' };
           return json(res, 200, { entries: url.searchParams.get('kind') === 'debug' ? auditLogs.getDebug(options) : auditLogs.getRequests(options), limits: auditLogs.limits });
         }
         if (route === '/admin/api/key' && req.method === 'POST') {
@@ -247,15 +283,39 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
           config.apiKey = key;
           config.keySource = 'admin-settings';
           auditLogs.debug({ code: 'key_changed', level: 'info', requestId });
+          auditLogs.adminAction({ action: 'key_rotate', target: body.action, result: 'ok' });
           return json(res, 200, body.action === 'set' ? { ok: true } : { ok: true, key });
         }
         return json(res, 405, { error: 'Method not allowed' });
       }
 
+      // ── Admin action log & SSE regression test ──
+      if (route === '/admin/api/actions' && req.method === 'GET') {
+        if (!adminRateGate(req, res)) return;
+        if (!adminAuthorized(req, config.apiKey)) { recordAdminFailure(req); return json(res, 401, { ok: false, error: 'Unauthorized' }); }
+        return json(res, 200, { ok: true, entries: auditLogs.getAdminActions(url.searchParams.get('limit')) });
+      }
+      if (route === '/admin/api/regression/sse-toolcall' && req.method === 'POST') {
+        if (!adminRateGate(req, res)) return;
+        if (!adminAuthorized(req, config.apiKey)) { recordAdminFailure(req); return json(res, 401, { ok: false, error: 'Unauthorized' }); }
+        // Hồi quy cho lỗi stream 2026-10-29: arguments dài phải ghép lại nguyên vẹn qua emitter.
+        const argLen = Math.min(5000, Math.max(100, Number((await readBody(req))?.argLength) || 600));
+        const argsJson = JSON.stringify({ command: 'x'.repeat(argLen), note: 'regression-fixture' });
+        let reassembled = '';
+        emitOpenAiToolCallDeltas((chunk) => {
+          for (const tc of chunk?.choices?.[0]?.delta?.tool_calls || []) reassembled += tc?.function?.arguments || '';
+        }, { requestId, model: 'regression', toolCalls: [{ id: 'call_regression', name: 'run_command', input: JSON.parse(argsJson) }], delayMs: 0 });
+        let parseOk = false;
+        try { parseOk = JSON.parse(reassembled).command?.length === argLen; } catch { parseOk = false; }
+        return json(res, 200, { ok: true, originalLength: argsJson.length, reassembledLength: reassembled.length, parseOk, lostChars: argsJson.length - reassembled.length });
+      }
+
       // ── Sharkpool API Key Management (/admin/api/keys/*) ──
       if (route.startsWith("/admin/api/keys")) {
         res.setHeader("cache-control", "no-store");
+        if (!adminRateGate(req, res)) return;
         if (!adminAuthorized(req, config.apiKey)) {
+          recordAdminFailure(req);
           return json(res, 401, { ok: false, error: "Unauthorized: Admin authentication required" });
         }
 
@@ -265,6 +325,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
 
         if (route === "/admin/api/keys/create" && req.method === "POST") {
           const body = await readBody(req);
+          auditLogs.adminAction({ action: 'key_create', target: String(body.label || ''), result: 'ok' });
           const created = createKey({
             label: body.label,
             role: body.role || "user",
@@ -276,6 +337,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
 
         if (route === "/admin/api/keys/toggle" && req.method === "POST") {
           const body = await readBody(req);
+          auditLogs.adminAction({ action: 'key_toggle', target: String(body.id || ''), result: body.active ? 'active' : 'inactive' });
           const toggled = toggleKey(body.id, body.active);
           if (!toggled) return json(res, 404, { ok: false, error: "Key not found" });
           // 2026-10-28: trả masked view — không bơm plaintext key qua response phụ.
@@ -286,6 +348,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         if (route === "/admin/api/keys" && req.method === "DELETE") {
           const id = url.searchParams.get("id");
           if (!id) return json(res, 400, { ok: false, error: "Missing key id" });
+          auditLogs.adminAction({ action: 'key_delete', target: String(id || ''), result: 'ok' });
           const removed = deleteKey(id);
           return json(res, 200, { ok: true, removed, keys: listKeys() });
         }
@@ -295,8 +358,10 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
 
       // ── Admin APIs (/admin/api/clickup/*) ──
       if (route.startsWith('/admin/api/clickup/')) {
+        if (!adminRateGate(req, res)) return;
         const adminAllowed = adminAuthorized(req, config.apiKey);
         if (!adminAllowed) {
+          recordAdminFailure(req);
           return json(res, 401, { ok: false, error: 'Unauthorized: Invalid API Key' });
         }
 
@@ -357,6 +422,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         // Workspace delete
         if (route === '/admin/api/clickup/workspaces' && req.method === 'DELETE') {
           const id = url.searchParams.get('id');
+          auditLogs.adminAction({ action: 'workspace_delete', target: String(id || ''), result: 'ok' });
           const removed = clickupPool.removeWorkspace(id);
           return json(res, 200, {
             ok: true,
@@ -458,6 +524,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
         // Account delete
         if (route === '/admin/api/clickup/accounts' && req.method === 'DELETE') {
           const id = url.searchParams.get('id');
+          auditLogs.adminAction({ action: 'account_delete', target: String(id || ''), result: 'ok' });
           const removed = clickupPool.removeAccount(id);
           return json(res, 200, {
             ok: true,
@@ -480,9 +547,20 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
           });
         }
 
+        // Auto-recreate preview (chỉ đọc): liệt kê giữ/xóa/tạo, KHÔNG xóa hay tạo gì.
+        if (route === '/admin/api/clickup/auto-recreate/preview' && req.method === 'POST') {
+          const body = await readBody(req);
+          const preview = await clickupPool.previewAutoRecreate({
+            accountId: body.accountIds || body.accountId || null,
+            countPerAccount: Number(body.count || 10),
+          });
+          return json(res, 200, { ok: true, preview });
+        }
+
         // Auto recreate workspaces & activate Trial MAX 23
         if (route === '/admin/api/clickup/auto-recreate' && req.method === 'POST') {
           const body = await readBody(req);
+          auditLogs.adminAction({ action: 'auto_recreate', target: String(body.accountIds || body.accountId || 'all'), result: 'started' });
           const result = await clickupPool.autoRecreateWorkspaces({
             accountId: body.accountIds || body.accountId || null,
             countPerAccount: Number(body.count || 10),

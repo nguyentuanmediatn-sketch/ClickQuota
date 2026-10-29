@@ -366,6 +366,23 @@ window.loadClickUpHub = async function(refresh = false) {
     if ($('clickup-stat-accounts')) $('clickup-stat-accounts').textContent = `${validAccs} / ${accounts.length} Accounts`;
     if ($('clickup-stat-accounts-sub')) $('clickup-stat-accounts-sub').textContent = `${accounts.length} tài khoản mẹ liên kết`;
 
+    // Quota thật theo lỗi upstream (không chỉ entitlement): workspace nào bị cách ly
+    // vì quota ẩn sẽ hiện lý do + giờ hết cách ly, tránh nhìn số entitlement mà tưởng còn quota.
+    const blockedEl = $('dash-quota-blocked-alert');
+    if (blockedEl) {
+      const blocked = summary.quotaBlockedWorkspaces || [];
+      if (blocked.length > 0) {
+        blockedEl.style.display = 'block';
+        blockedEl.innerHTML = '<strong>⚠️ Quota thật đang chặn ' + blocked.length + ' workspace:</strong> ' + blocked.map(w => {
+          const until = w.cooldownUntil ? new Date(w.cooldownUntil).toLocaleTimeString('vi-VN') : '';
+          const reason = w.cooldownReason || (w.quotaStatus === 'exhausted' ? 'Hết quota (exhausted)' : 'Đang cách ly');
+          return escapeHtml(w.label || w.workspaceId) + ' — ' + escapeHtml(reason) + (until ? ' (đến ' + until + ')' : '') + ' • entitlement còn ' + (w.entitlementDailyLeft ?? '?') + ' token (con số này có thể sai lệch so với upstream)';
+        }).join('<br>');
+      } else {
+        blockedEl.style.display = 'none';
+      }
+    }
+
     renderWorkspacesTable(workspaces, accounts);
     renderAccountsTable(accounts, workspaces);
     updateWorkspaceDropdowns(workspaces, accounts);
@@ -616,7 +633,29 @@ if (pingBtn) {
 
 // Auto Recreate All Workspaces
 $('clickup-auto-recreate-btn')?.addEventListener('click', async () => {
-  if (!confirm('Bạn có chắc muốn kích hoạt Auto Recreate cho toàn bộ tài khoản mẹ để nhận Quota MAX 23?')) return;
+  // Bước 1: xem trước (chỉ đọc) — liệt kê giữ/xóa/tạo trước khi đụng tới tài khoản thật.
+  let preview;
+  try {
+    const res = await fetch('/admin/api/clickup/auto-recreate/preview', {
+      method: 'POST', headers: authHeaders(), body: JSON.stringify({ count: 10 })
+    });
+    const data = await res.json();
+    if (!data.ok) { alert('Không xem trước được: ' + (data.error || 'lỗi không rõ')); return; }
+    preview = data.preview;
+  } catch (err) { alert('Lỗi xem trước: ' + err.message); return; }
+  const lines = [];
+  for (const a of preview.accounts || []) {
+    if (a.error) { lines.push('• ' + a.email + ': ' + a.error); continue; }
+    lines.push('• Tài khoản ' + a.email + ' (prefix ' + a.prefix + ')');
+    lines.push('  GIỮ: ' + (a.keep || []).map(w => w.name + ' (' + w.id + ')').join(', '));
+    if ((a.keepOther || []).length) lines.push('  GIỮ THÊM (tùy chỉnh, không xóa): ' + a.keepOther.map(w => w.name).join(', '));
+    lines.push('  XÓA: ' + ((a.delete || []).length ? a.delete.map(w => w.name + ' (' + w.id + ')').join(', ') : 'không có'));
+    lines.push('  TẠO MỚI: ' + ((a.create || []).length ? a.create.join(', ') : 'không có'));
+    if (a.warning) lines.push('  ⚠️ ' + a.warning);
+  }
+  lines.push('');
+  lines.push('Tổng: xóa ' + preview.totalDelete + ' workspace, tạo ' + preview.totalCreate + ' workspace mới.');
+  if (!confirm('XEM TRƯỚC AUTO-RECREATE (chưa chạy gì cả):\n\n' + lines.join('\n') + '\n\nBấm OK để CHẠY THẬT. Thao tác xóa workspace không thể hoàn tác.')) return;
   try {
     const res = await fetch('/admin/api/clickup/auto-recreate', {
       method: 'POST',
@@ -812,8 +851,11 @@ async function fetchLogs() {
   try {
     const outcomeFilter = $('log-filter-outcome')?.value || '';
     const outcomeQuery = outcomeFilter ? `&outcome=${encodeURIComponent(outcomeFilter)}` : '';
+    const toolOnly = $('log-filter-toolonly')?.checked ? '&toolOnly=1' : '';
+    const toolParse = $('log-filter-toolparse')?.value || '';
+    const toolParseQuery = toolParse ? `&toolParseStatus=${encodeURIComponent(toolParse)}` : '';
     const [resReq, resDebug] = await Promise.all([
-      fetch(`/admin/api/logs?kind=request&limit=150${outcomeQuery}`, { headers: authHeaders(), cache: 'no-store' }),
+      fetch(`/admin/api/logs?kind=request&limit=150${outcomeQuery}${toolOnly}${toolParseQuery}`, { headers: authHeaders(), cache: 'no-store' }),
       fetch(`/admin/api/logs?kind=debug&limit=150`, { headers: authHeaders(), cache: 'no-store' })
     ]);
     if (resReq.ok) {
@@ -857,7 +899,8 @@ function renderLogs() {
       return (r.requestedModel || '').toLowerCase().includes(search) ||
              (r.resolvedModel || '').toLowerCase().includes(search) ||
              (r.requestId || '').toLowerCase().includes(search) ||
-             (r.path || '').toLowerCase().includes(search);
+             (r.path || '').toLowerCase().includes(search) ||
+             ((r.toolNames || []).join(' ').toLowerCase().includes(search));
     });
 
     if (filtered.length === 0) {
@@ -893,6 +936,7 @@ function renderLogs() {
                 </button>
               </div>
             </div>
+            <div style="font-size: 11px; color: #fbbf24;">${(r.toolCount || 0) > 0 ? '🔧 Tool: ' + escapeHtml((r.toolNames || []).join(', ')) + ' • arguments dài ' + escapeHtml((r.toolArgLengths || []).join(', ')) + ' ký tự • finish ' + escapeHtml(r.finishReason || '') + ' • parse ' + escapeHtml(r.toolParseStatus || '') : ((r.declaredToolNames || []).length > 0 ? '🔧 Đã khai ' + (r.declaredToolNames || []).length + ' tool (' + escapeHtml((r.declaredToolNames || []).join(', ')) + ') nhưng không trả toolcall • parse ' + escapeHtml(r.toolParseStatus || 'none') : '🔧 Không khai tool')}</div>
             <pre id="log-json-${shortId}" style="display: none; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 10px; color: #93c5fd; white-space: pre-wrap; margin: 0;">${escapeHtml(JSON.stringify(r, null, 2))}</pre>
           </div>
         `;
@@ -908,7 +952,8 @@ function renderLogs() {
       return (r.requestedModel || '').toLowerCase().includes(search) ||
              (r.resolvedModel || '').toLowerCase().includes(search) ||
              (r.requestId || '').toLowerCase().includes(search) ||
-             (r.path || '').toLowerCase().includes(search);
+             (r.path || '').toLowerCase().includes(search) ||
+             ((r.toolNames || []).join(' ').toLowerCase().includes(search));
     });
 
     if (filtered.length === 0) {
@@ -991,6 +1036,8 @@ function setupLogsHub() {
   });
 
   $('log-filter-outcome')?.addEventListener('change', () => fetchLogs());
+  $('log-filter-toolonly')?.addEventListener('change', () => fetchLogs());
+  $('log-filter-toolparse')?.addEventListener('change', () => fetchLogs());
   $('log-search-input')?.addEventListener('input', () => renderLogs());
   $('btn-log-refresh')?.addEventListener('click', () => fetchLogs());
 
@@ -1010,6 +1057,59 @@ function setupLogsHub() {
   }, 2500);
 }
 
+
+// ── Client config presets + key test + SSE regression + admin action log ──
+window.renderClientConfig = function() {
+  const preset = $('cc-preset')?.value || 'nine-router';
+  const origin = window.location.origin;
+  const key = sessionStorage.getItem('clickquota-api-key') || '';
+  const presets = {
+    'nine-router': { label: '9router (OpenAI Compatible)', base: origin + '/v1', model: 'claude-opus-5-5-CL', note: 'Trong 9router phải chọn node OpenAI Compatible, KHÔNG chọn provider OpenAI có sẵn (nó gọi api.openai.com). Base URL phải có /v1, key là key gateway.' },
+    'ide-openai': { label: 'IDE / client OpenAI', base: origin + '/v1', model: 'claude-opus-5-5-CL', note: 'Client tự nối /chat/completions và /models vào base URL, nên base phải kết thúc bằng /v1.' },
+    'anthropic': { label: 'Claude Code / client Anthropic', base: origin + '/v1', model: 'claude-opus-5-5-CL', note: 'Đi qua endpoint /v1/messages của gateway; base vẫn là /v1.' },
+    'curl': { label: 'curl thô', base: origin + '/v1/chat/completions', model: 'claude-opus-5-5-CL', note: 'curl dùng đường dẫn đầy đủ, không dùng base URL.' },
+  };
+  const p = presets[preset];
+  if ($('cc-base')) $('cc-base').textContent = p.base;
+  if ($('cc-model')) $('cc-model').textContent = p.model;
+  if ($('cc-note')) $('cc-note').textContent = p.note;
+  if ($('cc-keyinfo')) $('cc-keyinfo').textContent = key ? ('Key đang dùng trong trình duyệt này: dài ' + key.length + ' ký tự, bắt đầu ' + key.slice(0, 3) + ', kết thúc ' + key.slice(-4) + ' (so sánh với key thật để phát hiện copy thiếu ký tự)') : 'Chưa nhập key vào session này (bấm Đổi key admin ở trên).';
+  if ($('cc-config')) $('cc-config').textContent = 'base_url: ' + p.base + '\napi_key: <key gateway của bạn>\nmodel: ' + p.model;
+};
+window.copyClientConfig = async function() {
+  const txt = $('cc-config')?.textContent || '';
+  try { await navigator.clipboard.writeText(txt); alert('Đã copy cấu hình (key vẫn để trống — dán key thật của bạn vào).'); }
+  catch { alert('Không copy được, hãy copy tay từ khung cấu hình.'); }
+};
+window.testClientKey = async function() {
+  const key = sessionStorage.getItem('clickquota-api-key') || '';
+  const out = $('cc-test-result');
+  if (!key) { if (out) out.textContent = 'Chưa có key trong session.'; return; }
+  try {
+    const res = await fetch('/v1/models', { headers: authHeaders(), cache: 'no-store' });
+    if (out) out.textContent = res.ok ? '✅ Key hợp lệ: /v1/models trả 200.' : ('❌ Key không hợp lệ hoặc base sai: HTTP ' + res.status + ' (kiểm tra lại key và base /v1).');
+  } catch (e) { if (out) out.textContent = '❌ Không gọi được gateway: ' + e.message; }
+};
+window.runSseRegression = async function() {
+  const out = $('pg-regression-result');
+  if (out) out.textContent = 'Đang chạy test hồi quy...';
+  try {
+    const res = await fetch('/admin/api/regression/sse-toolcall', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ argLength: 600 }) });
+    const data = await res.json();
+    if (out) out.textContent = data.ok && data.parseOk && data.lostChars === 0
+      ? ('✅ PASS: arguments ' + data.originalLength + ' ký tự ghép lại đủ ' + data.reassembledLength + ' ký tự, JSON parse được, không mất ký tự nào.')
+      : ('❌ FAIL: gốc ' + data.originalLength + ' ký tự, ghép lại ' + data.reassembledLength + ' ký tự, mất ' + data.lostChars + ' ký tự, parseOk=' + data.parseOk);
+  } catch (e) { if (out) out.textContent = '❌ Lỗi chạy test: ' + e.message; }
+};
+window.loadAdminActions = async function() {
+  try {
+    const res = await fetch('/admin/api/actions?limit=100', { headers: authHeaders(), cache: 'no-store' });
+    const data = await res.json();
+    const el = $('admin-actions-list');
+    if (el) el.textContent = (data.entries || []).map(e => (e.timestamp ? new Date(e.timestamp).toLocaleString('vi-VN') : '') + ' • ' + e.action + ' • ' + (e.target || '') + ' • ' + (e.result || '')).join('\n') || 'Chưa có hành động admin nào được ghi.';
+  } catch (e) { console.error('loadAdminActions error:', e); }
+};
+
 // ── Application Initialization ─────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   const savedTab = localStorage.getItem('clickquota_active_tab') || 'dashboard';
@@ -1019,5 +1119,6 @@ document.addEventListener('DOMContentLoaded', () => {
   window.loadKeysHub();
   setupClickUpAutoRefresh();
   setupAgentPlayground();
+  window.renderClientConfig?.();
   setupLogsHub();
 });
