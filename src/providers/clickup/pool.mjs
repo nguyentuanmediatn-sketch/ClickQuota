@@ -1796,6 +1796,78 @@ export class WorkspacePool {
 
   
 
+
+  // Preview auto-recreate (CHỈ ĐỌC, không xóa/tạo/persist): quét inventory ClickUp của
+  // từng tài khoản, áp đúng luật lọc của autoRecreate (giữ primary, chỉ xóa workspace
+  // tự sinh khớp prefix + thuộc owner), rồi quy hoạch tên mới bằng planNames.
+  async previewAutoRecreate({ accountId = null, countPerAccount = 10 } = {}) {
+    let targetAccounts = [];
+    if (Array.isArray(accountId)) {
+      targetAccounts = this.accounts.filter((a) => accountId.includes(a.id));
+    } else if (accountId && accountId !== 'all') {
+      const ids = String(accountId).split(',').map(v => v.trim()).filter(Boolean);
+      targetAccounts = this.accounts.filter((a) => ids.includes(a.id));
+    } else {
+      targetAccounts = this.accounts.filter((a) => a.enabled !== false && (a.cookie || a.cuRefresh));
+    }
+    if (targetAccounts.length === 0) throw new Error('Không tìm thấy tài khoản ClickUp hợp lệ có cookie để xem trước.');
+    const base = process.env.CLICKUP_API_BASE || 'https://frontdoor-prod-ap-southeast-1-1.clickup.com';
+    const accounts = [];
+    for (const account of targetAccounts) {
+      let initialToken = account.initialToken || null;
+      if (!initialToken) {
+        const existingAccWs = this.workspaces.find((w) => w.accountId === account.id && w.token);
+        if (existingAccWs) initialToken = existingAccWs.token;
+      }
+      const knownWsId = account.workspaceId || account.defaultWorkspaceId;
+      if (!initialToken && knownWsId) {
+        try { const m = await this.mintWorkspaceTokenFromAccount(knownWsId, account); if (m?.token) initialToken = m.token; } catch {}
+      }
+      if (!initialToken) { accounts.push({ accountId: account.id, email: account.email || '', error: 'Không mint được token để quét inventory.' }); continue; }
+      let invRes = null;
+      try {
+        invRes = await fetch(`${base}/user/v1/user?include_teams=true&include_invited_by=true`, {
+          headers: { Authorization: 'Bearer ' + initialToken, 'clickup-surface': 'client' },
+        });
+        if (!invRes.ok) invRes = null;
+      } catch {}
+      if (!invRes) {
+        const cookieHeader = account.cookie || (account.cuRefresh ? `cu_refresh=${account.cuRefresh}` : '');
+        if (cookieHeader) {
+          try {
+            invRes = await fetch(`${base}/user/v1/user?include_teams=true&include_invited_by=true`, {
+              headers: { ...(account.cuRefresh ? { Authorization: 'Bearer ' + account.cuRefresh } : {}), Cookie: cookieHeader, 'clickup-surface': 'client', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36', Origin: 'https://app.clickup.com', Referer: 'https://app.clickup.com/' },
+            });
+            if (!invRes.ok) invRes = null;
+          } catch {}
+        }
+      }
+      if (!invRes) { accounts.push({ accountId: account.id, email: account.email || '', error: 'Không quét được inventory ClickUp.' }); continue; }
+      const invData = await invRes.json();
+      const userId = String(invData.user?.id || '');
+      const userEmail = (invData.user?.email || account.email || '').trim().normalize('NFC');
+      const allTeams = Array.isArray(invData.teams) ? invData.teams : [];
+      if (allTeams.length === 0) { accounts.push({ accountId: account.id, email: userEmail, error: 'Không tìm thấy team nào.' }); continue; }
+      const primaryTeam = allTeams[0];
+      const atIdx = userEmail.lastIndexOf('@');
+      const emailPrefix = atIdx >= 1 ? userEmail.slice(0, atIdx).replace(/[^a-zA-Z0-9_-]/g, '_') + '_' : 'zcode_';
+      const toDelete = allTeams.slice(1).filter((t) => String(t.owner?.id || '') === userId && String(t.id) !== String(primaryTeam.id) && isManagedWorkspaceName(t.name, emailPrefix));
+      const remaining = allTeams.filter((t) => !toDelete.some((d) => String(d.id) === String(t.id)));
+      const planned = planNames(remaining, userEmail, countPerAccount);
+      const existingNames = new Set(remaining.map((t) => t.name));
+      accounts.push({
+        accountId: account.id, email: userEmail, prefix: emailPrefix,
+        keep: [{ id: String(primaryTeam.id), name: primaryTeam.name, role: 'primary' }],
+        keepOther: remaining.slice(1).map((t) => ({ id: String(t.id), name: t.name, role: 'custom-kept' })),
+        delete: toDelete.map((t) => ({ id: String(t.id), name: t.name })),
+        create: planned.filter((n) => !existingNames.has(n)),
+        skippedExisting: planned.filter((n) => existingNames.has(n)),
+        warning: 'Trial MAX 23 có thể báo Không khả dụng (như lần chạy 2026-10-29) nhưng workspace vẫn gọi được — xem trước này không đảm bảo trial.',
+      });
+    }
+    return { accounts, totalDelete: accounts.reduce((n, a) => n + (a.delete?.length || 0), 0), totalCreate: accounts.reduce((n, a) => n + (a.create?.length || 0), 0) };
+  }
+
   async autoRecreateWorkspaces({ accountId = null, countPerAccount = 10, reason = 'manual' } = {}) {
     if (this._isRecreating) {
       throw new Error('Đang có tiến trình tự động làm mới Workspaces đang chạy, vui lòng chờ.');
@@ -2288,7 +2360,16 @@ export class WorkspacePool {
     const totalWeeklyUsed = ws.reduce((sum, w) => sum + (w.enabled ? (w.quota?.weeklyUsage || 0) : 0), 0);
     const totalWeeklyLeft = ws.reduce((sum, w) => sum + (w.enabled && w.quotaStatus !== 'exhausted' ? (w.quota?.weeklyLeft || 1125000) : 0), 0);
 
+    const quotaBlockedWorkspaces = ws.filter((w) => w.enabled && (w.quotaStatus === 'exhausted' || (w.cooldownUntil && w.cooldownUntil > now))).map((w) => ({
+      label: w.label, workspaceId: w.workspaceId, quotaStatus: w.quotaStatus || null,
+      cooldownReason: w.cooldownUntil && w.cooldownUntil > now ? (w.cooldownReason || null) : null,
+      cooldownUntil: w.cooldownUntil && w.cooldownUntil > now ? new Date(w.cooldownUntil).toISOString() : null,
+      // Quota hiển thị theo entitlement có thể khác quota thật upstream (ví dụ: entitlement
+      // còn 450k nhưng upstream vẫn USAGE_QUOTA_EXCEEDED) — lý do cách ly mới là sự thật vận hành.
+      entitlementDailyLeft: w.quota?.dailyLeft ?? null,
+    }));
     return {
+      quotaBlockedWorkspaces,
       totalWorkspaces: ws.length,
       activeWorkspaces: active.length,
       inCooldown: inCooldown.length,

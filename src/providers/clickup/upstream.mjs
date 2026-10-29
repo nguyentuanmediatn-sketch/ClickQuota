@@ -1247,6 +1247,19 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       if (toolCall) {
         toolCall.text = preText;
       }
+      // Admin log: chỉ ghi tên tool + độ dài arguments, KHÔNG ghi nội dung arguments
+      // (arguments có thể chứa lệnh, đường dẫn, dữ liệu nhạy cảm của client).
+      if (diagnostics) {
+        diagnostics.declaredToolNames = (availableTools || []).map(t => t?.function?.name || t?.name).filter(v => typeof v === 'string');
+        diagnostics.toolNames = toolCalls.map(c => c?.name).filter(v => typeof v === 'string');
+        diagnostics.toolCount = toolCalls.length;
+        diagnostics.toolArgLengths = toolCalls.map(c => {
+          const a = c?.input;
+          return typeof a === 'string' ? a.length : JSON.stringify(a ?? {}).length;
+        });
+        diagnostics.finishReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
+        diagnostics.toolParseStatus = !availableTools?.length ? 'no_tools' : (toolCalls.length > 0 ? 'ok' : 'none');
+      }
 
       // 2026-10-29 (Master Directive — Yêu cầu 3): Pre-Commit Stream Inspector /
       // Seamless Continuation. Heartbeat vẫn đang chạy ở điểm này — hidden follow-up
@@ -1643,6 +1656,19 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
       const preText = parsedTool?.text !== undefined ? parsedTool.text : extractPreToolText(replyText);
       if (toolCall) {
         toolCall.text = preText;
+      }
+      // Admin log: chỉ ghi tên tool + độ dài arguments, KHÔNG ghi nội dung arguments
+      // (arguments có thể chứa lệnh, đường dẫn, dữ liệu nhạy cảm của client).
+      if (diagnostics) {
+        diagnostics.declaredToolNames = (availableTools || []).map(t => t?.function?.name || t?.name).filter(v => typeof v === 'string');
+        diagnostics.toolNames = toolCalls.map(c => c?.name).filter(v => typeof v === 'string');
+        diagnostics.toolCount = toolCalls.length;
+        diagnostics.toolArgLengths = toolCalls.map(c => {
+          const a = c?.input;
+          return typeof a === 'string' ? a.length : JSON.stringify(a ?? {}).length;
+        });
+        diagnostics.finishReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
+        diagnostics.toolParseStatus = !availableTools?.length ? 'no_tools' : (toolCalls.length > 0 ? 'ok' : 'none');
       }
 
       // 2026-10-29 (Master Directive — Yêu cầu 3): Seamless Continuation cho non-stream.

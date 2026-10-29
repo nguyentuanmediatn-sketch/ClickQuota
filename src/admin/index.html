@@ -121,6 +121,7 @@
             <div id="clickup-stat-accounts-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Chứa cu_refresh cookie</div>
           </div>
         </div>
+        <div id="dash-quota-blocked-alert" style="display: none; margin-bottom: 24px; padding: 14px 16px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 10px; font-size: 13px; color: #fde68a; line-height: 1.6;"></div>
         <!-- Health & Pool Actions -->
         <div class="card" style="margin-bottom: 24px; padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
@@ -387,7 +388,15 @@
                 <option value="error">❌ Lỗi (Error)</option>
                 <option value="aborted">⚠️ Bị hủy (Aborted)</option>
               </select>
-              <input type="text" id="log-search-input" class="form-control" placeholder="Lọc theo model, ID..." style="width: 180px; padding: 6px 10px; font-size: 12px;">
+              <label style="font-size: 12px; display: inline-flex; align-items: center; gap: 6px;"><input type="checkbox" id="log-filter-toolonly"> Chỉ toolcall</label>
+              <select id="log-filter-toolparse" class="form-control" style="width: auto; padding: 6px 10px; font-size: 12px;">
+                <option value="">Mọi trạng thái parse</option>
+                <option value="ok">Parse ok</option>
+                <option value="none">Khai tool nhưng không trả call</option>
+                <option value="no_tools">Không khai tool</option>
+                <option value="failed">Parse hỏng</option>
+              </select>
+              <input type="text" id="log-search-input" class="form-control" placeholder="Lọc theo model, ID, tên tool..." style="width: 180px; padding: 6px 10px; font-size: 12px;">
               <button type="button" id="btn-log-refresh" class="btn-ghost" style="padding: 6px 12px; font-size: 12px;">🔄 Làm mới</button>
               <button type="button" id="btn-log-pause" class="btn-ghost" style="padding: 6px 12px; font-size: 12px; color: #34d399; font-weight: 600;">🟢 Tự cập nhật (2s)</button>
             </div>
@@ -537,6 +546,33 @@
               <pre id="pg-res-raw" style="display: none; margin-top: 6px; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: var(--font-mono, monospace); font-size: 10px; color: #94a3b8; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></pre>
             </div>
           </div>
+        </div>
+        </div>
+
+        <!-- Client config presets + SSE regression + admin action log -->
+        <div class="card" style="margin-top: 24px; padding: 22px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;">
+          <h2 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 700; color: #fff;">🔌 Cấu Hình Client & Kiểm Tra</h2>
+          <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Preset client:</label>
+          <select id="cc-preset" class="form-control" style="width: 100%; margin-bottom: 12px;" onchange="renderClientConfig()">
+            <option value="nine-router">9router (OpenAI Compatible)</option>
+            <option value="ide-openai">IDE / client OpenAI</option>
+            <option value="anthropic">Claude Code / client Anthropic</option>
+            <option value="curl">curl thô</option>
+          </select>
+          <div style="font-size: 13px; line-height: 1.6; margin-bottom: 8px;">Base URL: <code id="cc-base" style="color: #38bdf8;"></code> • Model mẫu: <code id="cc-model" style="color: #a78bfa;"></code></div>
+          <div id="cc-note" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;"></div>
+          <div id="cc-keyinfo" style="font-size: 12px; color: #fbbf24; margin-bottom: 8px;"></div>
+          <pre id="cc-config" style="background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; color: #93c5fd; white-space: pre-wrap;"></pre>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+            <button type="button" class="btn-ghost" onclick="copyClientConfig()">📋 Copy cấu hình</button>
+            <button type="button" class="btn-ghost" onclick="testClientKey()">✅ Test key với /v1/models</button>
+            <button type="button" class="btn-ghost" onclick="runSseRegression()">🧪 Test hồi quy stream toolcall dài</button>
+            <button type="button" class="btn-ghost" onclick="loadAdminActions()">📋 Xem nhật ký hành động admin</button>
+          </div>
+          <div id="cc-test-result" style="font-size: 12px; margin-top: 8px;"></div>
+          <div id="pg-regression-result" style="font-size: 12px; margin-top: 8px;"></div>
+          <pre id="admin-actions-list" style="margin-top: 8px; background: #070a12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; color: #93c5fd; white-space: pre-wrap; max-height: 200px; overflow-y: auto;">Bấm "Xem nhật ký hành động admin" để tải.</pre>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">Bảo mật: để tách quyền admin khỏi key gateway, đặt biến môi trường CLICKQUOTA_ADMIN_KEY trên server rồi khởi động lại. Khi đã đặt, key gateway chỉ dùng cho client gọi /v1, không còn quyền admin. Sau 10 lần thử key admin sai trong 5 phút, IP đó bị khóa 5 phút.</div>
         </div>
       </section>
 

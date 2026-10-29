@@ -7,7 +7,7 @@ export const REQUEST_LOG = path.join(LOG_DIR, 'request-log.jsonl');
 export const DEBUG_LOG = path.join(LOG_DIR, 'debug-log.jsonl');
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_MEMORY = 500;
-const SAFE_FIELDS = new Set(['timestamp', 'requestId', 'method', 'path', 'protocol', 'requestedModel', 'resolvedModel', 'workspaceId', 'stream', 'status', 'durationMs', 'ttftMs', 'inputTokens', 'outputTokens', 'outcome', 'errorCode', 'code', 'level']);
+const SAFE_FIELDS = new Set(['timestamp', 'requestId', 'method', 'path', 'protocol', 'requestedModel', 'resolvedModel', 'workspaceId', 'stream', 'status', 'durationMs', 'ttftMs', 'inputTokens', 'outputTokens', 'outcome', 'errorCode', 'code', 'level', 'toolNames', 'declaredToolNames', 'toolCount', 'toolArgLengths', 'finishReason', 'toolParseStatus']);
 const SAFE_PATHS = new Set(['/v1/messages', '/v1/chat/completions', '/v1/responses', '/v1/models', '/health', '/api/status', '/api/quota/refresh']);
 // 2026-10-28 (P3): bổ sung code crash-handler của index.mjs — trước đây bị coerce
 // thành 'server_error' khiến không phân biệt được uncaught_exception trong log.
@@ -45,6 +45,17 @@ function cleanRecord(kind, data) {
     if (key === 'errorCode') { if (typeof value === 'string' && /^[a-z][a-z0-9_]{0,40}$/.test(value)) out.errorCode = value; continue; }
     if (key === 'stream') { if (typeof value === 'boolean') out.stream = value; continue; }
     if (['status', 'durationMs', 'ttftMs', 'inputTokens', 'outputTokens'].includes(key) && Number.isFinite(Number(value))) out[key] = Math.max(0, Math.min(Number(value), 2_147_483_647));
+    if (key === 'toolNames' || key === 'declaredToolNames') {
+      if (Array.isArray(value)) out[key] = value.filter(v => typeof v === 'string' && /^[a-zA-Z0-9_.\-]{1,100}$/.test(v)).slice(0, 50);
+      continue;
+    }
+    if (key === 'toolArgLengths') {
+      if (Array.isArray(value)) out[key] = value.filter(v => Number.isFinite(Number(v))).map(v => Math.max(0, Math.min(Number(v), 10000000))).slice(0, 50);
+      continue;
+    }
+    if (key === 'toolCount' && Number.isFinite(Number(value))) { out[key] = Math.max(0, Math.min(Number(value), 1000)); continue; }
+    if (key === 'finishReason' && typeof value === 'string' && /^[a-z_]{1,30}$/.test(value)) { out[key] = value; continue; }
+    if (key === 'toolParseStatus' && ['none', 'no_tools', 'ok', 'repaired', 'failed'].includes(value)) { out[key] = value; continue; }
     if (key === 'timestamp' && typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value)) out.timestamp = value;
   }
   if (!out.timestamp) out.timestamp = new Date().toISOString();
@@ -96,6 +107,8 @@ function get(kind, options = {}) {
   if (id) result = result.filter(row => row.requestId === id);
   if (kind === 'debug' && options.code) result = result.filter(row => row.code === options.code);
   if (kind === 'request' && options.outcome) result = result.filter(row => row.outcome === options.outcome);
+  if (kind === 'request' && options.toolOnly) result = result.filter(row => (row.toolCount || 0) > 0);
+  if (kind === 'request' && options.toolParseStatus) result = result.filter(row => row.toolParseStatus === options.toolParseStatus);
   const limit = Math.min(200, Math.max(1, Number(options.limit) || 100));
   return result.slice(-limit);
 }
@@ -110,6 +123,31 @@ export const auditLogs = {
   request: data => append('request', data),
   debug: data => append('debug', data),
   getRequests: options => get('request', options),
+  adminAction: data => appendAdminAction(data),
+  getAdminActions: limit => getAdminActions(limit),
   getDebug: options => get('debug', options),
   limits: { maxFileBytes: MAX_FILE_BYTES, maxMemory: MAX_MEMORY, maxRead: 200 },
 };
+
+export const ADMIN_ACTIONS_LOG = path.join(LOG_DIR, 'admin-actions.jsonl');
+const adminActionsMemory = [];
+const ADMIN_ACTION_FIELDS = new Set(['timestamp', 'action', 'target', 'result', 'detail']);
+export function appendAdminAction(data = {}) {
+  const row = { timestamp: new Date().toISOString() };
+  for (const [k, v] of Object.entries(data)) {
+    if (!ADMIN_ACTION_FIELDS.has(k) || k === 'timestamp') continue;
+    if (typeof v === 'string' && v.length <= 300) row[k] = v;
+  }
+  if (!row.action) return null;
+  adminActionsMemory.push(row);
+  if (adminActionsMemory.length > MAX_MEMORY) adminActionsMemory.splice(0, adminActionsMemory.length - MAX_MEMORY);
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(ADMIN_ACTIONS_LOG, JSON.stringify(row) + '\n', { mode: 0o600 });
+  } catch {}
+  return row;
+}
+export function getAdminActions(limit = 100) {
+  const n = Math.min(200, Math.max(1, Number(limit) || 100));
+  return adminActionsMemory.slice(-n);
+}
