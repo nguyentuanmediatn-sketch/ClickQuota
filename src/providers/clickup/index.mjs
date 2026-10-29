@@ -1,6 +1,7 @@
 import { clickupPool, WorkspacePool } from './pool.mjs';
 import {
   CLICKUP_MODELS,
+  CLICKUP_ALIAS_MODELS,
   handleClickUpRequest,
   resolveClickUpModel,
 } from './upstream.mjs';
@@ -26,12 +27,19 @@ export class ClickUpProvider {
   }
 
   getModels() {
-    return CLICKUP_MODELS.map((id) => ({
-      id,
-      object: 'model',
-      owned_by: 'clickup',
-      provider: 'clickup',
-    }));
+    return CLICKUP_MODELS.map((id) => {
+      const isAlias = CLICKUP_ALIAS_MODELS.has(id);
+      return {
+        id,
+        object: 'model',
+        owned_by: 'clickup',
+        provider: 'clickup',
+        // §207: client phải phân biệt được model thật với alias gateway.
+        // Alias vẫn phục vụ được (gateway ánh xạ lại), nhưng raw id là 500 ở upstream.
+        alias: isAlias,
+        ...(isAlias ? { aliasOf: resolveClickUpModel(id) } : {}),
+      };
+    });
   }
 
   async getStatus() {

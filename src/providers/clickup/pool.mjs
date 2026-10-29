@@ -169,6 +169,13 @@ export class WorkspacePool {
         _circuitOpen: Boolean(w.cooldownUntil && w.cooldownReason?.startsWith('Circuit Breaker:')),
         quotaStatus: w.quotaStatus || 'available',
         quota: w.quota || null,
+        // 2026-10-29 (§6.1) Canary quarantine cho "hạn mức ẩn": workspace báo
+        // USAGE_QUOTA_EXCEEDED dù entitlement vẫn 'available'. Giữ mốc các lần
+        // dính để phát hiện tái phát trong cửa sổ 30 phút.
+        hiddenQuotaHits: Array.isArray(w.hiddenQuotaHits) ? w.hiddenQuotaHits.map(Number).filter(Number.isFinite) : [],
+        stickyBlockedUntil: Number(w.stickyBlockedUntil || 0),
+        lastAiRequestErrorAt: Number(w.lastAiRequestErrorAt || 0),
+        lastCanaryAt: Number(w.lastCanaryAt || 0),
         gatewayCache: null,
         lastRenewAttempt: 0,
         lastDispatchedAt: 0,
@@ -248,6 +255,18 @@ export class WorkspacePool {
     const excludeList = Array.isArray(excludeWorkspaceIds) ? excludeWorkspaceIds : [];
 
     for (const ws of this.workspaces) {
+      // 2026-10-29 (§6.1): workspace bị khóa vì HẠN MỨC ẨN không được mở lại chỉ
+      // vì cooldown hết hạn — phải qua canary (_tryCanaryRelease) xác nhận endpoint
+      // /ai thực sự phục vụ lại. Nếu không, mỗi lần cooldown rụng nó lại quay lại
+      // pool và đốt một vòng failover.
+      if (ws.stickyBlockedUntil && ws.stickyBlockedUntil > now) {
+        this._tryCanaryRelease(ws, now);
+        continue;
+      }
+      if (ws.stickyBlockedUntil && ws.stickyBlockedUntil <= now) {
+        ws.stickyBlockedUntil = 0;
+        ws.hiddenQuotaHits = [];
+      }
       if (ws.cooldownUntil && ws.cooldownUntil <= now) {
         ws.cooldownUntil = 0;
         ws.cooldownReason = null;
@@ -267,6 +286,7 @@ export class WorkspacePool {
         w.enabled &&
         w.token &&
         (!w.cooldownUntil || w.cooldownUntil <= now) &&
+        !(w.stickyBlockedUntil && w.stickyBlockedUntil > now) &&
         w.quotaStatus !== 'exhausted' &&
         !excludeList.includes(w.workspaceId) &&
         !excludeList.includes(w.id)
@@ -485,6 +505,11 @@ export class WorkspacePool {
     if (!ws) return;
     ws.errorRequests++;
     ws.consecutiveErrors = (ws.consecutiveErrors || 0) + 1;
+    // 2026-10-29 (§6.1): mốc lỗi AI-request gần nhất. Audit quota (GraphQL) KHÔNG
+    // được dùng để mở lại workspace nếu request thật vừa thất bại — entitlement
+    // 'available' không chứng minh được endpoint /ai còn phục vụ.
+    const now = Date.now();
+    ws.lastAiRequestErrorAt = now;
     const errMsg = (typeof error === 'string' ? error : error?.message || '').toLowerCase();
 
     // Chỉ classifier quota khi tín hiệu rõ ràng: HTTP 429, mã USAGE_QUOTA_EXCEEDED,
@@ -508,6 +533,24 @@ export class WorkspacePool {
         ws.quota.status = 'exhausted';
       }
       console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) chạm quota ngày (USAGE_QUOTA_EXCEEDED) — cách ly đến ${new Date(ws.cooldownUntil).toLocaleTimeString('vi-VN')}.`);
+
+      // ── Canary quarantine: "hạn mức ẩn" (§6.1) ──────────────────────────────
+      // Triệu chứng: request AI bị chặn vì quota NHƯNG entitlement/audit vẫn báo
+      // 'available'. Audit kế tiếp sẽ xóa cooldown và ném workspace chết trở lại
+      // vòng xoay → thất bại lặp vô hạn. Đếm số lần tái phát trong 30 phút; từ
+      // lần thứ 2 trở đi khóa cứng 24h, chỉ mở bằng canary.
+      const entitlementSaysOk = !ws.quota?.isBlocked && (ws.quota?.dailyLeft ?? 0) > 0;
+      if (entitlementSaysOk) {
+        const windowStart = now - 30 * 60 * 1000;
+        ws.hiddenQuotaHits = (Array.isArray(ws.hiddenQuotaHits) ? ws.hiddenQuotaHits : []).filter((t) => t > windowStart);
+        ws.hiddenQuotaHits.push(now);
+        if (ws.hiddenQuotaHits.length >= 2) {
+          ws.stickyBlockedUntil = now + 24 * 3600 * 1000;
+          ws.cooldownReason = 'hidden-quota';
+          console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) dính HẠN MỨC ẨN ${ws.hiddenQuotaHits.length} lần/30 phút trong khi entitlement vẫn 'available' — khóa cứng 24h, chỉ mở lại qua canary.`);
+        }
+      }
+
       this.persist();
       return;
     }
@@ -561,6 +604,50 @@ export class WorkspacePool {
     if (!ws || ws._circuitOpen) return;
     ws._circuitOpen = true;
     alertEvents.emit(ALERT_EVENTS.CIRCUIT_OPEN, { workspaceId: ws.workspaceId, workspace: ws.label });
+  }
+
+  // ── Canary release cho workspace dính "hạn mức ẩn" (§6.1) ──────────────────
+  // Mỗi 60 phút thả đúng MỘT request thăm dò (upstream tiêm qua setCanaryProbe).
+  // Thành công → gỡ khóa; thất bại → gia hạn 24h. Chạy nền, không chặn acquire()
+  // của request đang phục vụ người dùng.
+  setCanaryProbe(fn) {
+    this._canaryProbe = typeof fn === 'function' ? fn : null;
+  }
+
+  _tryCanaryRelease(ws, now = Date.now()) {
+    if (!this._canaryProbe || !ws?.enabled) return;
+    if (ws._canaryInFlight) return;
+    if (ws.lastCanaryAt && now - ws.lastCanaryAt < 60 * 60 * 1000) return;
+
+    ws._canaryInFlight = true;
+    ws.lastCanaryAt = now;
+    Promise.resolve()
+      .then(() => this._canaryProbe(ws))
+      .then((ok) => {
+        if (ok) {
+          ws.stickyBlockedUntil = 0;
+          ws.hiddenQuotaHits = [];
+          ws.cooldownUntil = 0;
+          ws.cooldownReason = null;
+          ws.consecutiveErrors = 0;
+          ws.quotaStatus = 'available';
+          if (ws.quota) ws.quota.status = 'available';
+          this._emitCircuitClose(ws);
+          console.warn(`[ClickUpPool] Canary THÀNH CÔNG cho "${ws.label}" (${ws.workspaceId}) — gỡ khóa hạn mức ẩn, đưa lại vào pool.`);
+        } else {
+          ws.stickyBlockedUntil = Date.now() + 24 * 3600 * 1000;
+          console.warn(`[ClickUpPool] Canary THẤT BẠI cho "${ws.label}" (${ws.workspaceId}) — giữ khóa thêm 24h.`);
+        }
+        this.persist();
+      })
+      .catch((err) => {
+        ws.stickyBlockedUntil = Date.now() + 24 * 3600 * 1000;
+        console.warn(`[ClickUpPool] Canary lỗi cho "${ws.label}": ${err.message} — giữ khóa thêm 24h.`);
+        this.persist();
+      })
+      .finally(() => {
+        ws._canaryInFlight = false;
+      });
   }
 
   // Chỉ phát khi workspace thực sự rời trạng thái cách ly (có mở trước đó).
@@ -1503,6 +1590,10 @@ export class WorkspacePool {
             quota: w.quota,
             cooldownUntil: w.cooldownUntil,
             cooldownReason: w.cooldownReason,
+            hiddenQuotaHits: Array.isArray(w.hiddenQuotaHits) ? w.hiddenQuotaHits : [],
+            stickyBlockedUntil: Number(w.stickyBlockedUntil || 0),
+            lastAiRequestErrorAt: Number(w.lastAiRequestErrorAt || 0),
+            lastCanaryAt: Number(w.lastCanaryAt || 0),
             totalRequests: Number(w.totalRequests || 0),
             successRequests: Number(w.successRequests || 0),
             errorRequests: Number(w.errorRequests || 0),
@@ -1621,7 +1712,15 @@ export class WorkspacePool {
           // reportError đặt — audit không có thông tin mới về chúng, xóa sẽ trả
           // workspace hỏng về vòng xoay mỗi 15 phút để lại 403 / đốt failover.
           const isQuotaCooldown = !ws.cooldownReason || /quota|hết hạn mức|fair use/i.test(ws.cooldownReason);
-          if (isQuotaCooldown) {
+          // 2026-10-29 (§6.1) HẠN MỨC ẨN: entitlement 'available' KHÔNG chứng minh
+          // endpoint /ai còn phục vụ. Hai chốt chặn bổ sung:
+          //  1. stickyBlockedUntil còn hiệu lực → chỉ canary mới được gỡ.
+          //  2. request AI thật vừa lỗi trong 5 phút qua → audit lạc hậu hơn thực tế.
+          const stickyActive = ws.stickyBlockedUntil && ws.stickyBlockedUntil > Date.now();
+          const recentAiFailure = ws.lastAiRequestErrorAt && (Date.now() - ws.lastAiRequestErrorAt) < 5 * 60 * 1000;
+          if (stickyActive || recentAiFailure) {
+            ws.quotaStatus = stickyActive ? 'exhausted' : ws.quotaStatus;
+          } else if (isQuotaCooldown) {
             ws.cooldownUntil = 0;
             ws.cooldownReason = null;
             this._emitCircuitClose(ws);
@@ -1659,6 +1758,13 @@ export class WorkspacePool {
       gatewayCache: null,
       lastRenewAttempt: 0,
       lastDispatchedAt: 0,
+      // 2026-10-29 (§6.1): trạng thái cách ly "hạn mức ẩn" phải tồn tại ngay từ
+      // lúc tạo entry, nếu không workspace thêm lúc runtime sẽ undefined và mọi
+      // chốt chặn stickyBlockedUntil bị bỏ qua im lặng.
+      hiddenQuotaHits: Array.isArray(data.hiddenQuotaHits) ? data.hiddenQuotaHits.map(Number).filter(Number.isFinite) : [],
+      stickyBlockedUntil: Number(data.stickyBlockedUntil || 0),
+      lastAiRequestErrorAt: Number(data.lastAiRequestErrorAt || 0),
+      lastCanaryAt: Number(data.lastCanaryAt || 0),
     };
   }
 

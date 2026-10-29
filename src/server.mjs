@@ -7,6 +7,7 @@ import { createTelegramNotifier } from './alert/telegram-notifier.mjs';
 import { clickupPool } from './providers/clickup/pool.mjs';
 import { providerRegistry } from './providers/index.mjs';
 import { CLICKUP_MODELS } from './providers/clickup/upstream.mjs';
+import { getUpstreamTelemetry } from './providers/clickup/telemetry.mjs';
 import { normalizeResponsesRequest } from './protocols/openai-responses.mjs';
 import { listKeys, createKey, toggleKey, deleteKey, isKeyAuthorized, recordKeyUsage, generateOpenAIKey, isMasterSecret } from './key-store.mjs';
 
@@ -135,6 +136,22 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       // ── Health & Diagnostics ──
       if (req.method === 'GET' && route === '/health') {
         return json(res, 200, { status: 'ok', service: 'clickquota' });
+      }
+
+      // 2026-10-29 (§6.5 / P2#8) Telemetry upstream theo model: p50/p90/max của
+      // upstreamWaitMs (thời gian chờ upstream THẬT, tách khỏi typewriter/SSE) +
+      // đếm empty-completion, để theo dõi "tường ~29s" dịch chuyển theo thời gian.
+      // Chỉ số liệu + model id, không prompt/reply/workspace — cùng chuẩn riêng tư
+      // của audit-logs.mjs. Dữ liệu in-memory, reset khi restart (xem telemetry.mjs).
+      if (req.method === 'GET' && route === '/diagnostics/models') {
+        // Khác /health (public, chỉ trả status): endpoint này lộ model id, tỉ lệ
+        // lỗi và hành vi upstream — thông tin vận hành nội bộ. Nó nằm TRƯỚC lớp
+        // authorized() chung ở cuối handler nên phải tự kiểm tra, nếu không sẽ
+        // public ẩn danh. Chấp nhận cả admin key lẫn gateway key như /v1/models.
+        if (!adminAuthorized(req, config.apiKey) && !authorized(req, config.apiKey)) {
+          return json(res, 401, { error: { message: 'Unauthorized' } });
+        }
+        return json(res, 200, getUpstreamTelemetry());
       }
 
       // ── Admin Redesign preview (/admin-next) — tách khỏi admin production ──

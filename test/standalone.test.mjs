@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const sourceURL = name => pathToFileURL(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'src', name)).href;
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 async function listen(server) {
   server.listen(0, '127.0.0.1');
@@ -38,10 +39,19 @@ test('Standalone with loopback mock upstream', async t => {
   t.after(async function () { await close(mock); });
   process.env.CLICKUP_API_BASE = origin;
   process.env.CLICKUP_ID_BASE = origin;
+  // Gateway production chạy trên cùng máy (src/index.mjs) tự làm mới token workspace
+  // và ghi vào <APP_ROOT>/.state/clickup_config.json. Nếu test canh đúng file đó thì
+  // assertion "state không bị ghi" sẽ fail ngẫu nhiên theo lịch refresh token, chứ
+  // không phản ánh lỗi của code đang test. Cô lập sang state dir riêng của test.
+  const stateDir = mkdtempSync(path.join(tmpdir(), 'clickquota-state-'));
+  process.env.CLICKQUOTA_STATE_DIR = stateDir;
+  t.after(() => rmSync(stateDir, { recursive: true, force: true }));
   const { clickupPool, WorkspacePool } = await import(sourceURL('clickup-pool.mjs'));
   const { createServer } = await import(sourceURL('server.mjs'));
   const { executePooledUpstream } = await import(sourceURL('clickup-upstream.mjs'));
-  const { STATE_FILE, APP_ROOT, loadConfig } = await import(sourceURL('config.mjs'));
+  const { STATE_FILE, STATE_DIR, loadConfig } = await import(sourceURL('config.mjs'));
+  // Fixture cố định: test chỉ cần khẳng định không có ghi ngoài ý muốn, nội dung là gì không quan trọng.
+  writeFileSync(STATE_FILE, JSON.stringify({ workspaces: [], accounts: [] }, null, 2));
   const originalState = readFileSync(STATE_FILE, 'utf8');
   clickupPool.onPersist = null;
   const server = createServer({ apiKey: 'test-key' });
@@ -168,7 +178,10 @@ test('Standalone with loopback mock upstream', async t => {
     assert.equal(typeof pool._checkAndTriggerAutoRecreate, 'function');
   });
   await t.test('isolated state and config validation', () => {
-    assert.equal(STATE_FILE, path.join(APP_ROOT, '.state', 'clickup_config.json'));
+    // CLICKQUOTA_STATE_DIR phải thực sự chuyển hướng state ra khỏi APP_ROOT,
+    // nếu không test sẽ lại giẫm lên file của gateway production.
+    assert.equal(STATE_DIR, stateDir);
+    assert.equal(STATE_FILE, path.join(stateDir, 'clickup_config.json'));
     assert.equal(readFileSync(STATE_FILE, 'utf8'), originalState);
     assert.throws(() => loadConfig({ CLICKQUOTA_HOST: '0.0.0.0' }), /API_KEY/);
     assert.throws(() => loadConfig({ CLICKQUOTA_PORT: 'oops' }), /PORT/);

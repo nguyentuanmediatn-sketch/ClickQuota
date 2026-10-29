@@ -26,6 +26,7 @@ import {
   normalizeToolChoice,
   toolChoiceDirective,
 } from './sse-emitter.mjs';
+import { recordUpstreamAttempt } from './telemetry.mjs';
 
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
@@ -53,6 +54,34 @@ export const CLICKUP_MODELS = [
   'gpt-4o-CL',
   'brain-CL',
 ];
+
+// 2026-10-29 (§175/§207): các ID chỉ tồn tại như ALIAS gateway — gọi raw lên
+// upstream trả 500 INTERNAL_SERVER_ERROR. Chúng vẫn dùng được qua gateway vì
+// resolveClickUpModel() ánh xạ về opus-5-5 / gemini-4-argon, nên KHÔNG xóa khỏi
+// CLICKUP_MODELS (isModel/diagnostics phụ thuộc vào đó) mà chỉ gắn cờ để client
+// không nhầm là model thật khi đọc /v1/models.
+export const CLICKUP_ALIAS_MODELS = new Set([
+  'super-agent-CL',
+  'super-agent-builder-CL',
+  'claude-3-7-sonnet-CL',
+  'claude-haiku-4-5-CL',
+  'gpt-4o-CL',
+  'brain-CL',
+]);
+
+// 2026-10-29 (§1.2) Model ID được live matrix xác nhận CÓ phục vụ CHAT_COMPLETION
+// ở upstream (id thật, không phải alias gateway). Dùng để phân biệt
+// INTERNAL_SERVER_ERROR "model không tồn tại" (vĩnh viễn, theo model) với
+// INTERNAL_SERVER_ERROR tạm thời của chính dịch vụ ai (§1.3: gemini-2.5-pro OK 1/4
+// lần). `gemini-2.5-pro` CỐ TÌNH không có ở đây — nó hợp lệ nhưng bất ổn định nên
+// không nằm trong fallback chain; nếu lọt vào payload thì coi như tạm thời.
+export const CLICKUP_UPSTREAM_VALID_MODELS = new Set([
+  'gpt-6-astra', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+  'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-6', 'claude-sonnet-5-5',
+  'claude-haiku-5-5', 'google/gemini-4-argon', 'google/gemini-3.8-flash',
+  'google/gemini-3.5-flash-lite',
+  'global.anthropic.claude-opus-5-5', 'global.anthropic.claude-opus-5',
+]);
 
 // Note: Server routes using isClickUpModel(model, config) from ./config.mjs
 
@@ -343,7 +372,12 @@ export function resolveActiveUserIntent(rawMessages, fallbackContent = 'Hello') 
   };
 }
 
-export function sanitizeMessagesForUpstream(messages, fallbackPrompt, toolsPrompt, maxBudgetChars = 120000) {
+// 2026-10-29 (§227/§243): upstream đo được ≥475k tokens context, budget 120k chars
+// cũ cắt lịch sử sớm một cách vô cớ và làm mất ngữ cảnh giữa hội thoại dài.
+// Nâng lên 300k chars (~75k tokens) — vẫn còn biên an toàn lớn so với trần đo được.
+export const UPSTREAM_BUDGET_CHARS = 300000;
+
+export function sanitizeMessagesForUpstream(messages, fallbackPrompt, toolsPrompt, maxBudgetChars = UPSTREAM_BUDGET_CHARS) {
   let clean = [];
   if (Array.isArray(messages) && messages.length > 0) {
     for (const m of messages) {
@@ -411,7 +445,7 @@ function mapParsedCalls(parsedTool, toolMapper) {
 
 async function runLazyContinuation({
   payload, requestedWs, sessionKey, signal, resolvedModel,
-  replyText, availableTools, toolMapper, ideType, diagnostics,
+  replyText, availableTools, toolMapper, ideType, diagnostics, toolChoice,
 }) {
   if (!Array.isArray(availableTools) || availableTools.length === 0) return null;
   if (!checkAntiStallStoppage(replyText)) return null;
@@ -421,9 +455,13 @@ async function runLazyContinuation({
   } catch {
     return null;
   }
+  // 2026-10-29 (§133/§244): continuation trước đây chỉ gửi payload gốc + note trung
+  // lập. Nối thêm directive toolChoice (required/named) để lượt continuation mang
+  // đúng ràng buộc client đã yêu cầu, tăng tỉ lệ phát tool-call thật.
+  const contNote = `${CONTINUATION_NOTE}${toolChoiceDirective(toolChoice)}`;
   if (contPayload?.variables?.input) {
-    contPayload.variables.input.prompt = `${contPayload.variables.input.prompt || ''}${CONTINUATION_NOTE}`;
-    contPayload.variables.input.text = `${contPayload.variables.input.text || ''}${CONTINUATION_NOTE}`;
+    contPayload.variables.input.prompt = `${contPayload.variables.input.prompt || ''}${contNote}`;
+    contPayload.variables.input.text = `${contPayload.variables.input.text || ''}${contNote}`;
   }
   const result = await executeClickUpWithFallback({
     payload: contPayload,
@@ -565,11 +603,50 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
       activePayload.variables.input.selectedModel = candidate;
     }
 
+    const attemptStartedAt = Date.now();
     try {
-      const res = await executePooledUpstream({ payload: activePayload, workspaceId, sessionKey, signal });
-      const aiRequestErrors = res.parsed?.data?.aiRequest?.errors;
+      let res = await executePooledUpstream({ payload: activePayload, workspaceId, sessionKey, signal });
+      let elapsedMs = Date.now() - attemptStartedAt;
+      let aiRequestErrors = res.parsed?.data?.aiRequest?.errors;
+
+      // 2026-10-29 (§6.2) EMPTY-COMPLETION SAU CHỜ LÂU: rỗng mà KHÔNG có lỗi
+      // GraphQL sau >=25s là dấu hiệu upstream tự cắt vì maxTokens quá lớn, chứ
+      // không phải model từ chối. Đổi model lúc này là sai hướng — hạ thẳng
+      // maxTokens xuống 1024 và thử lại CHÍNH model đó đúng một lần.
+      // (§6.5/P2#8) đánh dấu khi retry maxTokens=1024 cứu được một lần chạm tường,
+      // để telemetry phân biệt "tường 29s nhưng đã tự khắc phục" với "rỗng hẳn".
+      let retryRecovered = false;
+      const noGqlError = !Array.isArray(aiRequestErrors) || aiRequestErrors.length === 0;
+      if (
+        noGqlError &&
+        !extractReplyText(res.parsed) &&
+        elapsedMs >= 25000 &&
+        (activePayload?.variables?.input?.maxTokens || 0) > 1024
+      ) {
+        console.warn(`[ClickUpUpstream] Model ${candidate} rỗng sau ${Math.round(elapsedMs / 1000)}s — nghi upstream cắt do maxTokens. Thử lại cùng model với maxTokens=1024...`);
+        const retryPayload = {
+          ...activePayload,
+          variables: {
+            ...activePayload.variables,
+            input: { ...activePayload.variables.input, maxTokens: 1024 },
+          },
+        };
+        try {
+          const retryRes = await executePooledUpstream({ payload: retryPayload, workspaceId, sessionKey, signal });
+          if (extractReplyText(retryRes.parsed)) {
+            res = retryRes;
+            aiRequestErrors = retryRes.parsed?.data?.aiRequest?.errors;
+            retryRecovered = true;
+          }
+        } catch (retryErr) {
+          signal?.throwIfAborted();
+          console.warn(`[ClickUpUpstream] Retry maxTokens=1024 cho ${candidate} thất bại (${retryErr.message}).`);
+        }
+      }
+
       if (Array.isArray(aiRequestErrors) && aiRequestErrors.length > 0) {
         const errMsg = aiRequestErrors.map((e) => e?.message || e?.code || JSON.stringify(e)).join('; ');
+        recordUpstreamAttempt(candidate, elapsedMs, 'error', retryRecovered);
         console.warn(`[ClickUpUpstream] Model ${candidate} trả về lỗi GraphQL: ${errMsg}`);
         if (i === candidates.length - 1) {
           throw new Error(`ClickUp AI error: ${errMsg}`);
@@ -579,8 +656,10 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
 
       const text = extractReplyText(res.parsed);
       if (text) {
+        recordUpstreamAttempt(candidate, elapsedMs, 'success', retryRecovered);
         return { ...res, replyText: text, usedModel: candidate };
       }
+      recordUpstreamAttempt(candidate, elapsedMs, 'empty', retryRecovered);
 
       lastResult = res;
       const safeLen = (v) => {
@@ -609,6 +688,7 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
     } catch (err) {
       signal?.throwIfAborted();
       lastError = err;
+      recordUpstreamAttempt(candidate, Date.now() - attemptStartedAt, 'error');
       // Pool cạn kiệt toàn cục: trạng thái pool ảnh hưởng mọi model — không thử candidate nào nữa.
       if (err?.code === 'POOL_EXHAUSTED' || String(err?.message || '').includes('Tất cả Workspace ClickUp trong Pool')) {
         throw err;
@@ -620,6 +700,64 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
 
   throw lastError || new Error('ClickUp returned empty completions for all candidate models');
 }
+
+/**
+ * canaryProbeWorkspace (§6.1) - Gửi MỘT request AI tối thiểu để xác minh endpoint
+ * /ai của workspace thực sự còn phục vụ. Dùng cho workspace bị khóa vì "hạn mức
+ * ẩn" (entitlement báo 'available' nhưng aiRequest luôn lỗi). Bỏ qua pool.acquire()
+ * để không bị chính lớp cách ly chặn lại.
+ * @returns {Promise<boolean>} true nếu workspace trả completion hợp lệ.
+ */
+export async function canaryProbeWorkspace(ws) {
+  if (!ws?.token || !ws?.workspaceId) return false;
+
+  const exchanged = await clickupPool.getGatewayToken(ws);
+  const targetUrl = exchanged.url || 'https://frontdoor-search.clickup-sg.com/graphql/gateway';
+  const probePayload = {
+    operationName: 'AIRequest',
+    variables: {
+      type: 'CHAT_COMPLETION',
+      input: {
+        model: 'gpt-4o-mini',
+        selectedModel: 'gpt-4o-mini',
+        prompt: 'ping',
+        text: 'ping',
+        messages: [{ role: 'user', content: 'ping' }],
+        workspaceId: ws.workspaceId,
+        maxTokens: 16,
+      },
+    },
+    query: `query AIRequest($type: AIRequestType!, $input: JSONObject!) {
+  aiRequest(type: $type, input: $input) {
+    completionString
+    errors
+  }
+}`,
+  };
+
+  const resp = await fetch(targetUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: 'Bearer ' + exchanged.token,
+      Origin: 'https://app.clickup.com',
+      Referer: 'https://app.clickup.com/',
+      'clickup-surface': 'client',
+      'clickup-client-version': '3.83.0',
+    },
+    body: JSON.stringify(probePayload),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!resp.ok) return false;
+  const data = await resp.json().catch(() => null);
+  const ai = data?.data?.aiRequest;
+  if (!ai) return false;
+  if (Array.isArray(ai.errors) && ai.errors.length > 0) return false;
+  return typeof ai.completionString === 'string' && ai.completionString.trim().length > 0;
+}
+
+clickupPool.setCanaryProbe(canaryProbeWorkspace);
 
 /**
  * executePooledUpstream - Sends GraphQL AIRequest to ClickUp Gateway with automatic multi-workspace failover
@@ -777,6 +915,26 @@ export async function executePooledUpstream({ payload, headers = {}, workspaceId
 
       if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
         const errorDetail = parsed.errors.map((e) => e?.message || JSON.stringify(e)).join('; ');
+
+        // 2026-10-29 (§1.2/§217/§246) INVALID MODEL ID vs ISE TẠM THỜI.
+        // Upstream trả CÙNG một `extensions.code = INTERNAL_SERVER_ERROR` cho cả hai
+        // trường hợp, nên code ĐƠN THUẦN không đủ để phân loại (§1.3: gemini-2.5-pro
+        // hợp lệ nhưng 500 ở 3/4 lần thử; §85: gửi field `tools` cũng ra ISE).
+        // Chỉ kết luận "model không tồn tại" khi ID thực sự gửi đi KHÔNG nằm trong
+        // danh sách live-matrix đã xác nhận. Lúc đó lỗi là vĩnh viễn theo model:
+        // ném ngay để executeClickUpWithFallback đổi candidate, KHÔNG đốt attempt
+        // failover workspace và KHÔNG tính lỗi cho workspace đang dùng.
+        const sentModel = payload?.variables?.input?.model;
+        if (
+          sentModel
+          && !CLICKUP_UPSTREAM_VALID_MODELS.has(sentModel)
+          && parsed.errors.some((e) => e?.extensions?.code === 'INTERNAL_SERVER_ERROR')
+        ) {
+          const invErr = new Error(`ClickUp rejected model id "${sentModel}" (INTERNAL_SERVER_ERROR): ${errorDetail}`);
+          invErr.code = 'INVALID_MODEL';
+          throw invErr;
+        }
+
         const isModelDisabled = /ai_model_disabled|premium_models_not_entitled|not entitled/i.test(errorDetail);
         if (isModelDisabled) {
           reportAttemptError(errorDetail, 403);
@@ -1094,7 +1252,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         try {
           const cont = await runLazyContinuation({
             payload, requestedWs, sessionKey, signal, resolvedModel,
-            replyText, availableTools, toolMapper, ideType, diagnostics,
+            replyText, availableTools, toolMapper, ideType, diagnostics, toolChoice,
           });
           if (cont && cont.calls.length > 0) {
             // Model TỰ phát tool call thật ở lượt ngầm — không phải call bị gateway bịa.
@@ -1489,7 +1647,7 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
         try {
           const cont = await runLazyContinuation({
             payload, requestedWs, sessionKey, signal, resolvedModel,
-            replyText, availableTools, toolMapper, ideType, diagnostics,
+            replyText, availableTools, toolMapper, ideType, diagnostics, toolChoice,
           });
           if (cont && cont.calls.length > 0) {
             toolCalls = cont.calls;
