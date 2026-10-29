@@ -831,7 +831,10 @@ export async function executePooledUpstream({ payload, headers = {}, workspaceId
             port: target.port || undefined,
             path: target.pathname + target.search,
             method: 'POST',
-            agent: target.protocol === 'http:' ? httpAgent : httpsAgent,
+            // KHÔNG truyền agent tùy chỉnh: Node chỉ dùng proxy môi trường
+            // (NODE_USE_ENV_PROXY) qua default global agent. Agent tùy chỉnh
+            // sẽ bỏ qua proxy, khiến TLS trực tiếp tới ClickUp lỗi EPROTO
+            // "wrong version number" trên mạng bắt buộc đi qua proxy egress.
             headers: {
               'content-type': 'application/json',
               'content-length': Buffer.byteLength(body),

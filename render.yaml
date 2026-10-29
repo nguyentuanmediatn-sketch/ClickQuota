@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: clickquota
+    env: node
+    plan: free
+    buildCommand: npm ci --omit=dev --ignore-scripts
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CLICKQUOTA_HOST
+        value: 0.0.0.0
+      - key: CLICKQUOTA_API_KEY
+        sync: false

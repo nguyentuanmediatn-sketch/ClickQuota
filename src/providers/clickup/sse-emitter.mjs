@@ -74,13 +74,13 @@ export function emitOpenAiToolCallDeltas(write, opts = {}) {
     }));
     // 2. Argument deltas (JSON đã hợp lệ hóa)
     const argsJson = ensureValidArgsJson(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {}));
-    for (let i = 0; i < argsJson.length; i += argumentChunkSize) {
+    for (let i = 0; i < argsJson.length;) {
       if (abortCheck()) return;
       const { chunk, next } = sliceSafeUtf8(argsJson, i, argumentChunkSize);
       write(chunkHeader({
         tool_calls: [{ index: idx, function: { arguments: chunk } }],
       }));
-      i = next - 1; // vòng for tự += chunkSize
+      i = next; // next đã là vị trí sau chunk; không cộng thêm chunkSize nữa (lỗi cũ: i = next - 1 rồi for lại += 96 làm mất 95 ký tự mỗi vòng)
       if (delayMs) void sleep(delayMs);
     }
   }
