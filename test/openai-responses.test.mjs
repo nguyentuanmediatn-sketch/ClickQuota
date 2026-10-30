@@ -119,3 +119,145 @@ test('continues context through previous_response_id and rejects expired IDs', (
   );
   clearResponsesHistoryForTests();
 });
+
+test('generates stable call_id for function_call without id and rejects function_call_output without call_id', () => {
+  const normalized = normalizeResponsesRequest({
+    input: [
+      { type: 'function_call', name: 'search_files', arguments: '{"q":"main"}' },
+    ],
+  });
+  const assistantMsg = normalized.messages[0];
+  assert.equal(assistantMsg.role, 'assistant');
+  assert.ok(assistantMsg.content[0].id.startsWith('call_'));
+  assert.notEqual(assistantMsg.content[0].id, '');
+
+  assert.throws(
+    () => normalizeResponsesRequest({ input: [{ type: 'function_call_output', output: 'ok' }] }),
+    /call_id is required/,
+  );
+});
+
+test('merges consecutive function_call items into one assistant message', () => {
+  const normalized = normalizeResponsesRequest({
+    input: [
+      { type: 'message', role: 'user', content: 'Run tasks.' },
+      { type: 'function_call', call_id: 'c1', name: 'Task1', arguments: '{}' },
+      { type: 'function_call', call_id: 'c2', name: 'Task2', arguments: '{}' },
+    ],
+  });
+
+  assert.equal(normalized.messages.length, 2);
+  assert.equal(normalized.messages[1].role, 'assistant');
+  assert.equal(normalized.messages[1].content.length, 2);
+  assert.equal(normalized.messages[1].content[0].id, 'c1');
+  assert.equal(normalized.messages[1].content[1].id, 'c2');
+});
+
+test('merges consecutive function_call_output items into one user message', () => {
+  const normalized = normalizeResponsesRequest({
+    input: [
+      { type: 'function_call', call_id: 'c1', name: 'Task1', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'c1', output: 'res1' },
+      { type: 'function_call_output', call_id: 'c2', output: 'res2' },
+    ],
+  });
+
+  assert.equal(normalized.messages.length, 2);
+  assert.equal(normalized.messages[1].role, 'user');
+  assert.equal(normalized.messages[1].content.length, 2);
+  assert.equal(normalized.messages[1].content[0].tool_use_id, 'c1');
+  assert.equal(normalized.messages[1].content[1].tool_use_id, 'c2');
+});
+
+test('parseArguments repairs buffer and rejects invalid JSON', () => {
+  // Repaired JSON (unclosed quote and brace)
+  const normalized = normalizeResponsesRequest({
+    input: [
+      { type: 'function_call', call_id: 'c1', name: 'Task', arguments: '{"key": "value' },
+    ],
+  });
+  assert.deepEqual(normalized.messages[0].content[0].input, { key: 'value' });
+
+  // Completely invalid JSON throws invalid_request error
+  assert.throws(
+    () => normalizeResponsesRequest({
+      input: [{ type: 'function_call', call_id: 'c1', name: 'Task', arguments: '###NOT_JSON###' }],
+    }),
+    /Failed to parse tool arguments as JSON/,
+  );
+});
+
+test('reasoning summary is not injected as regular assistant message', () => {
+  const normalized = normalizeResponsesRequest({
+    input: [
+      { type: 'reasoning', summary: 'Thinking step by step...' },
+      { type: 'message', role: 'user', content: 'Hello' },
+    ],
+  });
+
+  assert.equal(normalized.messages.length, 1);
+  assert.equal(normalized.messages[0].role, 'user');
+  assert.equal(normalized.messages[0].content, 'Hello');
+});
+
+test('handles item_reference from previous responses and rejects unknown item types', () => {
+  clearResponsesHistoryForTests();
+  const context = createResponsesContext('test-ref');
+  const output = buildResponsesOutput({
+    context,
+    text: 'Done step 1.',
+    toolCalls: [{ id: 'fc_saved_1', name: 'Read', input: { path: 'a.txt' } }],
+  });
+  rememberResponsesConversation({
+    responseId: context.responseId,
+    messages: [{ role: 'user', content: 'Step 1' }],
+    output,
+  });
+
+  // Reference existing tool call
+  const withRef = normalizeResponsesRequest({
+    input: [
+      { type: 'item_reference', id: 'fc_testref_0' },
+      { type: 'function_call_output', call_id: 'fc_saved_1', output: 'content' },
+    ],
+  });
+  assert.equal(withRef.messages[0].role, 'assistant');
+  assert.equal(withRef.messages[0].content[0].type, 'tool_use');
+
+  // Unknown item type throws 400
+  assert.throws(
+    () => normalizeResponsesRequest({ input: [{ type: 'alien_type', foo: 'bar' }] }),
+    /Unsupported item type/,
+  );
+
+  // Missing item reference throws 400
+  assert.throws(
+    () => normalizeResponsesRequest({ input: [{ type: 'item_reference', id: 'fc_non_existent' }] }),
+    /unknown or expired/,
+  );
+
+  clearResponsesHistoryForTests();
+});
+
+test('hoists mid-conversation developer and system messages to the beginning', () => {
+  const normalized = normalizeResponsesRequest({
+    instructions: 'Base instructions.',
+    input: [
+      { type: 'message', role: 'user', content: 'First query.' },
+      { type: 'message', role: 'developer', content: 'Rule: be brief.' },
+      { type: 'message', role: 'assistant', content: 'Understood.' },
+      { type: 'message', role: 'system', content: 'Rule 2: output JSON.' },
+      { type: 'message', role: 'user', content: 'Second query.' },
+    ],
+  });
+
+  assert.equal(normalized.messages[0].role, 'system');
+  assert.match(normalized.messages[0].content, /Base instructions\./);
+  assert.match(normalized.messages[0].content, /Rule: be brief\./);
+  assert.match(normalized.messages[0].content, /Rule 2: output JSON\./);
+
+  // Ensure no system messages remain in the rest of conversation
+  for (let i = 1; i < normalized.messages.length; i++) {
+    assert.notEqual(normalized.messages[i].role, 'system');
+  }
+});

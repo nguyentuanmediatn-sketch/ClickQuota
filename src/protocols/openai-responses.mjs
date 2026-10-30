@@ -1,3 +1,5 @@
+import { repairJsonBuffer } from '../tools/json-repair.mjs';
+
 function invalidRequest(message, param = 'input') {
   const error = new Error(message);
   error.status = 400;
@@ -38,6 +40,37 @@ function getPreviousMessages(responseId) {
   responseHistory.delete(responseId);
   responseHistory.set(responseId, entry);
   return clone(entry.messages);
+}
+
+function findHistoryItem(refId) {
+  if (!refId) return null;
+  pruneResponseHistory();
+  for (const entry of responseHistory.values()) {
+    if (Array.isArray(entry.output)) {
+      const match = entry.output.find((item) => item.id === refId || item.call_id === refId);
+      if (match) return clone(match);
+    }
+    if (Array.isArray(entry.messages)) {
+      for (const msg of entry.messages) {
+        if (msg.id === refId) return clone(msg);
+        if (Array.isArray(msg.content)) {
+          const partMatch = msg.content.find((p) => p.id === refId || p.tool_use_id === refId);
+          if (partMatch) {
+            if (partMatch.type === 'tool_use') {
+              return {
+                type: 'function_call',
+                id: partMatch.id,
+                call_id: partMatch.id,
+                name: partMatch.name,
+                arguments: typeof partMatch.input === 'string' ? partMatch.input : JSON.stringify(partMatch.input ?? {}),
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function safeJson(value) {
@@ -90,89 +123,174 @@ function normalizeMessageContent(content) {
 }
 
 function parseArguments(value) {
-  if (value && typeof value === 'object') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   const text = String(value ?? '').trim();
   if (!text) return {};
   try {
     return JSON.parse(text);
   } catch {
-    return { raw: text };
+    const repaired = repairJsonBuffer(text);
+    if (repaired && typeof repaired === 'object' && !Array.isArray(repaired) && !('raw_arguments' in repaired)) {
+      return repaired;
+    }
+    throw invalidRequest(`Failed to parse tool arguments as JSON: ${text.slice(0, 100)}`, 'arguments');
   }
 }
 
-function appendResponsesItem(messages, item) {
+function getOrCreateCallId(item) {
+  const rawId = item.call_id || item.id;
+  if (typeof rawId === 'string' && rawId.trim()) return rawId.trim();
+  return `call_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+}
+
+function requireCallId(item, paramName = 'call_id') {
+  const rawId = item.call_id || item.id;
+  if (typeof rawId === 'string' && rawId.trim()) return rawId.trim();
+  throw invalidRequest(`${paramName} is required for tool call output.`, paramName);
+}
+
+function appendAssistantToolUse(messages, block) {
+  const lastMsg = messages[messages.length - 1];
+  if (lastMsg && lastMsg.role === 'assistant') {
+    if (Array.isArray(lastMsg.content)) {
+      lastMsg.content.push(block);
+      return;
+    }
+    if (typeof lastMsg.content === 'string') {
+      lastMsg.content = [{ type: 'text', text: lastMsg.content }, block];
+      return;
+    }
+  }
+  messages.push({
+    role: 'assistant',
+    content: [block],
+  });
+}
+
+function appendUserToolResult(messages, block) {
+  const lastMsg = messages[messages.length - 1];
+  if (lastMsg && lastMsg.role === 'user') {
+    if (Array.isArray(lastMsg.content)) {
+      lastMsg.content.push(block);
+      return;
+    }
+    if (typeof lastMsg.content === 'string') {
+      lastMsg.content = [{ type: 'text', text: lastMsg.content }, block];
+      return;
+    }
+  }
+  messages.push({
+    role: 'user',
+    content: [block],
+  });
+}
+
+function appendMessage(messages, role, content) {
+  const lastMsg = messages[messages.length - 1];
+  if (lastMsg && lastMsg.role === role) {
+    if (typeof lastMsg.content === 'string' && typeof content === 'string') {
+      lastMsg.content = `${lastMsg.content}\n\n${content}`;
+      return;
+    }
+    const lastParts = Array.isArray(lastMsg.content)
+      ? lastMsg.content
+      : [{ type: 'text', text: String(lastMsg.content) }];
+    const newParts = Array.isArray(content)
+      ? content
+      : [{ type: 'text', text: String(content) }];
+    lastMsg.content = [...lastParts, ...newParts];
+    return;
+  }
+  messages.push({ role, content });
+}
+
+function appendResponsesItem(messages, item, systemTexts = []) {
   if (typeof item === 'string') {
-    if (item.trim()) messages.push({ role: 'user', content: item });
+    if (item.trim()) appendMessage(messages, 'user', item);
     return;
   }
   if (!item || typeof item !== 'object') return;
 
+  if (item.type === 'item_reference') {
+    const refId = item.id;
+    if (!refId || typeof refId !== 'string') {
+      throw invalidRequest('item_reference requires a valid string id.', 'id');
+    }
+    const found = findHistoryItem(refId);
+    if (!found) {
+      throw invalidRequest(`item_reference "${refId}" is unknown or expired.`, 'id');
+    }
+    appendResponsesItem(messages, found, systemTexts);
+    return;
+  }
+
   if (item.type === 'message' || item.role) {
-    const role = item.role === 'developer' ? 'system' : (item.role || 'user');
+    if (item.role === 'developer' || item.role === 'system') {
+      const content = valueToText(item.content).trim();
+      if (content) systemTexts.push(content);
+      return;
+    }
+    const role = item.role || 'user';
     const content = normalizeMessageContent(item.content);
     const hasContent = typeof content === 'string' ? content.trim() : content.length > 0;
-    if (hasContent) messages.push({ role, content });
+    if (hasContent) appendMessage(messages, role, content);
     return;
   }
 
   if (item.type === 'function_call' || item.type === 'custom_tool_call') {
-    messages.push({
-      role: 'assistant',
-      content: [{
-        type: 'tool_use',
-        id: item.call_id || item.id || '',
-        name: item.name || item.tool_name || 'tool',
-        input: parseArguments(item.arguments ?? item.input),
-      }],
+    appendAssistantToolUse(messages, {
+      type: 'tool_use',
+      id: getOrCreateCallId(item),
+      name: item.name || item.tool_name || 'tool',
+      input: parseArguments(item.arguments ?? item.input),
     });
     return;
   }
 
   if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
-    messages.push({
-      role: 'user',
-      content: [{
-        type: 'tool_result',
-        tool_use_id: item.call_id || item.id || '',
-        content: valueToText(item.output),
-      }],
+    appendUserToolResult(messages, {
+      type: 'tool_result',
+      tool_use_id: requireCallId(item, 'call_id'),
+      content: valueToText(item.output),
     });
     return;
   }
 
   if (item.type === 'computer_call') {
-    messages.push({
-      role: 'assistant',
-      content: [{
-        type: 'tool_use',
-        id: item.call_id || item.id || '',
-        name: 'computer',
-        input: item.action || {},
-      }],
+    appendAssistantToolUse(messages, {
+      type: 'tool_use',
+      id: getOrCreateCallId(item),
+      name: 'computer',
+      input: item.action || {},
     });
     return;
   }
 
   if (item.type === 'computer_call_output') {
-    messages.push({
-      role: 'user',
-      content: [{
-        type: 'tool_result',
-        tool_use_id: item.call_id || item.id || '',
-        content: valueToText(item.output || item),
-      }],
+    appendUserToolResult(messages, {
+      type: 'tool_result',
+      tool_use_id: requireCallId(item, 'call_id'),
+      content: valueToText(item.output || item),
     });
     return;
   }
 
   if (item.type === 'reasoning') {
-    const summary = valueToText(item.summary);
-    if (summary) messages.push({ role: 'assistant', content: summary });
+    // Không chèn summary thành assistant text, tránh làm bẩn lịch sử hội thoại
     return;
   }
 
-  const fallback = valueToText(item.content ?? item);
-  if (fallback) messages.push({ role: 'user', content: fallback });
+  if (item.type) {
+    throw invalidRequest(`Unsupported item type: "${item.type}".`, 'type');
+  }
+
+  if (item.content !== undefined && !item.type && !item.role) {
+    const fallback = valueToText(item.content).trim();
+    if (fallback) appendMessage(messages, 'user', fallback);
+    return;
+  }
+
+  throw invalidRequest('Invalid input item format.', 'input');
 }
 
 export function normalizeResponsesRequest(body) {
@@ -181,8 +299,9 @@ export function normalizeResponsesRequest(body) {
   }
 
   const messages = [];
+  const systemTexts = [];
   const instructions = valueToText(body.instructions).trim();
-  if (instructions) messages.push({ role: 'system', content: instructions });
+  if (instructions) systemTexts.push(instructions);
 
   if (body.previous_response_id) {
     const previousMessages = getPreviousMessages(body.previous_response_id);
@@ -198,17 +317,21 @@ export function normalizeResponsesRequest(body) {
   if (body.input !== undefined) {
     if (typeof body.input === 'string') {
       if (!body.input.trim()) throw invalidRequest('input must not be empty.');
-      messages.push({ role: 'user', content: body.input });
+      appendMessage(messages, 'user', body.input);
     } else if (Array.isArray(body.input)) {
       if (body.input.length === 0) throw invalidRequest('input must not be empty.');
-      for (const item of body.input) appendResponsesItem(messages, item);
+      for (const item of body.input) appendResponsesItem(messages, item, systemTexts);
     } else {
       throw invalidRequest('input must be a string or an array of input items.');
     }
   } else if (Array.isArray(body.messages)) {
-    for (const message of body.messages) appendResponsesItem(messages, message);
+    for (const message of body.messages) appendResponsesItem(messages, message, systemTexts);
   } else {
     throw invalidRequest('input is required.');
+  }
+
+  if (systemTexts.length > 0) {
+    messages.unshift({ role: 'system', content: systemTexts.join('\n\n') });
   }
 
   if (messages.length === 0 || !messages.some((message) => message.role !== 'system')) {
@@ -303,16 +426,23 @@ export function rememberResponsesConversation({ responseId, messages, output }) 
     history.push({ role: 'assistant', content: assistantContent });
   }
 
-  // 2026-10-28 (P2): từ chối lưu entry quá lớn thay vì lưu và phình RAM.
-  // Lưu ý hành vi: entry CŨ của hội thoại vẫn còn → lần replay kế tiếp phục vụ
-  // context STALE (thiếu turn mới) thay vì lỗi "unknown" — graceful degradation.
+  // 2026-10-30: Hỗ trợ hội thoại dài (long-running tasks)
+  // Nếu history vượt RESPONSE_HISTORY_MAX_ENTRY_CHARS, tỉa bớt các turn cũ nhất
+  // (tránh stale context hay đóng băng lịch sử hội thoại khi chạy nhiều turn).
   try {
+    while (JSON.stringify(history).length > RESPONSE_HISTORY_MAX_ENTRY_CHARS && history.length > 2) {
+      history.splice(0, 1);
+    }
     if (JSON.stringify(history).length > RESPONSE_HISTORY_MAX_ENTRY_CHARS) return;
   } catch {
     return;
   }
   responseHistory.delete(responseId);
-  responseHistory.set(responseId, { createdAt: Date.now(), messages: history });
+  responseHistory.set(responseId, {
+    createdAt: Date.now(),
+    messages: history,
+    output: clone(output),
+  });
   pruneResponseHistory();
 }
 

@@ -6,11 +6,12 @@ import { UpstreamQueue } from '../../upstream-queue.mjs';
 
 import http from 'node:http';
 import https from 'node:https';
+import fs from 'node:fs';
 
 // 2026-10-28 (P2, REL-09): dùng store chung của config.mjs — APP_ROOT-anchored
 // (tôn trọng CLICKQUOTA_STATE_DIR), đọc lỗi THROW (không còn default-rỗng khiến
 // persist ghi đè mất state thật), temp file duy nhất theo pid + cleanup trong finally.
-import { readPoolConfig, persistPoolConfig } from '../../config.mjs';
+import { readPoolConfig, persistPoolConfig, STATE_FILE } from '../../config.mjs';
 import { alertEvents, ALERT_EVENTS } from '../../alert/events.mjs';
 
 function getClickUpApiBase() {
@@ -129,7 +130,52 @@ export class WorkspacePool {
     };
     this.maxConcurrentPerWorkspace = 3;
     this.onPersist = onPersist;
+    this._lastConfigMtime = 0;
+    this._lastDiskCheck = 0;
     this.initFromConfig(config);
+    if (typeof this.onPersist === 'function') {
+      this._initConfigFileWatcher();
+    }
+  }
+
+  _initConfigFileWatcher() {
+    if (process.env.NODE_ENV === 'test' || process.argv.some((a) => a.includes('test'))) return;
+    try {
+      if (typeof this.onPersist !== 'function') return;
+      if (this._fileWatcher) {
+        try { this._fileWatcher.close(); } catch {}
+        this._fileWatcher = null;
+      }
+      if (!STATE_FILE || !fs.existsSync(STATE_FILE)) return;
+      let debounceTimer = null;
+      this._fileWatcher = fs.watch(STATE_FILE, () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          this._syncFromDiskIfModified();
+        }, 300);
+      });
+      this._fileWatcher.on?.('error', () => {
+        try { this._fileWatcher?.close(); } catch {}
+        this._fileWatcher = null;
+      });
+      if (this._fileWatcher.unref) this._fileWatcher.unref();
+    } catch {}
+  }
+
+  _syncFromDiskIfModified() {
+    try {
+      if (typeof this.onPersist !== 'function') return;
+      if (this._isPersisting || this._isRecreating) return;
+      if (!STATE_FILE || !fs.existsSync(STATE_FILE)) return;
+      const stat = fs.statSync(STATE_FILE);
+      if (this._lastConfigMtime && stat.mtimeMs <= this._lastConfigMtime) return;
+      this._lastConfigMtime = stat.mtimeMs;
+      const conf = readPoolConfig();
+      if (Array.isArray(conf.workspaces) && conf.workspaces.length > 0) {
+        console.log(`[ClickUpPool] 🔄 Đồng bộ cấu hình từ file (${conf.workspaces.length} workspaces, ${conf.accounts?.length || 0} accounts)...`);
+        this.initFromConfig(conf);
+      }
+    } catch {}
   }
 
   initFromConfig(config = {}) {
@@ -252,6 +298,10 @@ export class WorkspacePool {
   async acquire({ preferredWorkspaceId = null, sessionKey = null, signal = null, excludeWorkspaceIds = [] } = {}) {
     signal?.throwIfAborted?.();
     const now = Date.now();
+    if (!this._lastDiskCheck || now - this._lastDiskCheck > 5000) {
+      this._lastDiskCheck = now;
+      this._syncFromDiskIfModified();
+    }
     const excludeList = Array.isArray(excludeWorkspaceIds) ? excludeWorkspaceIds : [];
 
     for (const ws of this.workspaces) {
@@ -531,6 +581,7 @@ export class WorkspacePool {
       if (ws.quota) {
         ws.quota.dailyLeft = 0;
         ws.quota.status = 'exhausted';
+        ws.quota.lastCheckedAt = Date.now();
       }
       console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) chạm quota ngày (USAGE_QUOTA_EXCEEDED) — cách ly đến ${new Date(ws.cooldownUntil).toLocaleTimeString('vi-VN')}.`);
 
@@ -552,6 +603,8 @@ export class WorkspacePool {
       }
 
       this.persist();
+      this.replaceExhaustedWorkspace(ws, 'Workspace cạn quota ngày (USAGE_QUOTA_EXCEEDED)').catch(() => {});
+      this._checkAndTriggerAutoRecreate({ accountId: ws.accountId, reason: `Workspace cạn quota ngày (USAGE_QUOTA_EXCEEDED)` });
       return;
     }
 
@@ -563,10 +616,12 @@ export class WorkspacePool {
       if (ws.quota) {
         ws.quota.isBlocked = true;
         ws.quota.status = 'exhausted';
+        ws.quota.lastCheckedAt = Date.now();
       }
       console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) gặp lỗi AI model disabled / not entitled: ${errMsg}`);
       this.persist();
 
+      this.replaceExhaustedWorkspace(ws, `Model bị khóa hoặc hết hạn gói Trial (${errMsg.slice(0, 60)})`).catch(() => {});
       this._checkAndTriggerAutoRecreate({ accountId: ws.accountId, reason: `Phát hiện lỗi Upstream: ${errMsg.slice(0, 60)}` });
       return;
     }
@@ -723,7 +778,7 @@ export class WorkspacePool {
     return ws._pendingGateway;
   }
 
-  async _doExchangeGatewayToken(ws) {
+  async _doExchangeGatewayToken(ws, isRetry = false) {
     const now = Date.now();
     const teamId = ws.workspaceId || this.defaults.workspaceId || '';
     const url = `${getClickUpApiBase()}/v2/sd/team/${teamId}/access-token`;
@@ -755,10 +810,22 @@ export class WorkspacePool {
             const body = Buffer.concat(chunks).toString('utf8');
             if (res.statusCode !== 200) {
               if (res.statusCode === 401 || res.statusCode === 403) {
+                if (body.includes('ACCESS_700') || body.includes('INSUFFICIENT_WORKSPACE_ACCESS') || body.includes('Must join workspace')) {
+                  console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) không còn quyền truy cập (ACCESS_700). Tự động vô hiệu hóa.`);
+                  ws.enabled = false;
+                  ws.cooldownReason = 'ACCESS_700: Workspace không còn quyền truy cập';
+                  this.persist();
+                  reject(new Error(`Workspace "${ws.label}" không có quyền truy cập (ACCESS_700)`));
+                  return;
+                }
+                if (isRetry) {
+                  reject(new Error(`Gateway exchange thất bại sau khi gia hạn session token: HTTP ${res.statusCode} ${body.slice(0, 150)}`));
+                  return;
+                }
                 console.warn(`[ClickUpPool] Gateway exchange trả ${res.statusCode} cho "${ws.label}". Thử renew session token...`);
                 try {
                   await this.renewSessionToken(ws);
-                  const retried = await this._doExchangeGatewayToken(ws);
+                  const retried = await this._doExchangeGatewayToken(ws, true);
                   resolve(retried);
                   return;
                 } catch (renewErr) {
@@ -1573,6 +1640,7 @@ export class WorkspacePool {
   }
 
   persist() {
+    this._isPersisting = true;
     if (typeof this.onPersist === 'function') {
       try {
         this.onPersist({
@@ -1611,9 +1679,16 @@ export class WorkspacePool {
             enabled: a.enabled,
           })),
         });
+        if (STATE_FILE && fs.existsSync(STATE_FILE)) {
+          try { this._lastConfigMtime = fs.statSync(STATE_FILE).mtimeMs; } catch {}
+        }
       } catch (err) {
         console.error('[ClickUpPool] Lỗi lưu trạng thái:', err.message);
+      } finally {
+        setTimeout(() => { this._isPersisting = false; }, 1200).unref?.();
       }
+    } else {
+      this._isPersisting = false;
     }
   }
 
@@ -1794,6 +1869,166 @@ export class WorkspacePool {
     }
   }
 
+  async replaceExhaustedWorkspace(ws, reason = 'quota_exhausted') {
+    if (!ws || !ws.workspaceId) return;
+    if (!this._replacingWsSet) this._replacingWsSet = new Set();
+    const wsKey = String(ws.workspaceId);
+    if (this._replacingWsSet.has(wsKey)) return;
+    this._replacingWsSet.add(wsKey);
+
+    try {
+      const account = this.getAccountForWorkspace(ws);
+      if (!account || account.enabled === false) {
+        console.warn(`[ClickUp Auto-Replace] Không tìm thấy account cho workspace "${ws.label}" (${wsKey})`);
+        return;
+      }
+
+      console.warn(`[ClickUp Auto-Replace] 🔄 Bắt đầu dọn dẹp và thay mới Workspace cạn quota: "${ws.label}" (${wsKey}) - Lý do: ${reason}`);
+
+      // 1. Khóa và cách ly workspace ngay lập tức trong pool
+      ws.isBlocked = true;
+      ws.quotaStatus = 'exhausted';
+      if (!ws.quota) ws.quota = {};
+      ws.quota.isBlocked = true;
+      ws.quota.lastCheckedAt = Date.now();
+      ws.cooldownUntil = Date.now() + 24 * 3600 * 1000;
+      this.persist();
+
+      // 2. Lấy initialToken của account
+      let initialToken = account.initialToken || null;
+      if (!initialToken) {
+        const otherWs = this.workspaces.find((w) => w.accountId === account.id && w.token && String(w.workspaceId) !== wsKey);
+        if (otherWs) initialToken = otherWs.token;
+      }
+      const knownWsId = account.workspaceId || account.defaultWorkspaceId;
+      if (!initialToken && knownWsId) {
+        try {
+          const m = await this.mintWorkspaceTokenFromAccount(knownWsId, account);
+          if (m?.token) initialToken = m.token;
+        } catch {}
+      }
+
+      const base = process.env.CLICKUP_API_BASE || 'https://frontdoor-prod-ap-southeast-1-1.clickup.com';
+
+      // 3. Xóa workspace cũ trên ClickUp TRƯỚC để giải phóng slot (ClickUp giới hạn 10 team / account)
+      try {
+        const delRes = await fetch(`${base}/team/v1/team/${wsKey}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: 'Bearer ' + (initialToken || ws.token),
+            'clickup-surface': 'client',
+            'x-csrf': '1',
+            'x-workspace-id': wsKey,
+          },
+        });
+        if (delRes.ok || delRes.status === 404 || delRes.status === 410) {
+          console.log(`[ClickUp Auto-Replace] 🗑️ Đã xóa thành công workspace cũ ${wsKey} trên ClickUp (${delRes.status}).`);
+        } else {
+          console.warn(`[ClickUp Auto-Replace] ⚠️ Xóa workspace ${wsKey} phản hồi status ${delRes.status}`);
+        }
+      } catch (delErr) {
+        console.warn(`[ClickUp Auto-Replace] Lỗi khi xóa workspace ${wsKey}: ${delErr.message}`);
+      }
+
+      // Xóa khỏi danh sách pool và persist
+      this.workspaces = this.workspaces.filter((w) => String(w.workspaceId) !== wsKey && String(w.id) !== String(ws.id));
+      this.persist();
+
+      // 4. Tạo workspace mới với format tên chuẩn
+      const userEmail = (account.email || '').trim().normalize('NFC');
+      const atIdx = userEmail.lastIndexOf('@');
+      const emailPrefix = atIdx >= 1 ? userEmail.slice(0, atIdx).replace(/[^a-zA-Z0-9_-]/g, '_') + '_' : 'zcode_';
+      const randSuffix = Date.now().toString(36).slice(-4);
+      const wsName = `${emailPrefix}${randSuffix}`;
+
+      const body = new FormData();
+      const fields = {
+        name: wsName,
+        avatar: '',
+        color: '#7b68ee',
+        segmentTrackingAttributes: '{}',
+        layoutSetting: '4.0.0',
+        chat_enabled: 'true',
+        chat_context: '{ "source": "auto-enablement" }',
+        threaded_comments: 'true',
+        extra_comment_reactions: '1',
+      };
+      for (const [k, v] of Object.entries(fields)) {
+        body.append(k, v);
+      }
+
+      const crRes = await fetch(`${base}/team/v1/team?verbose_response=true&make_post_creation_updates=true`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + (initialToken || ws.token),
+          'clickup-surface': 'client',
+          'x-csrf': '1',
+        },
+        body,
+      });
+
+      if (!crRes.ok) {
+        const errText = await crRes.text();
+        throw new Error(`ClickUp API không tạo được workspace (${crRes.status}): ${errText.slice(0, 100)}`);
+      }
+
+      const crData = await crRes.json();
+      const newWsId = String(crData?.id || '');
+      if (!newWsId) throw new Error(`ClickUp API không trả về id workspace mới: ${JSON.stringify(crData)}`);
+
+      // 5. Mint token cho workspace mới
+      const minted = await this.mintWorkspaceTokenFromAccount(newWsId, account);
+
+      // 6. Kích hoạt gói Trial MAX Plan 23
+      let trialActivated = false;
+      try {
+        const trialRes = await fetch(`${base}/plan/v2/team/${newWsId}/trial`, {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + minted.token,
+            'Content-Type': 'application/json',
+            'clickup-surface': 'client',
+            'clickup-client-version': '4.26.2',
+            'x-csrf': '1',
+            'x-workspace-id': newWsId,
+          },
+          body: JSON.stringify({ plan_id: '23' }),
+        });
+        const trialData = await trialRes.json();
+        if (String(trialData?.plan_id) === '23') {
+          trialActivated = true;
+        }
+      } catch (trErr) {
+        console.warn(`[ClickUp Auto-Replace] Kích hoạt Trial MAX 23 cho ${wsName} cảnh báo: ${trErr.message}`);
+      }
+
+      const newWsObj = this._createWorkspaceEntry({
+        id: `ws-${newWsId}`,
+        label: `${wsName} (${newWsId.slice(-4)})`,
+        workspaceId: newWsId,
+        accountId: account.id,
+        token: minted.token,
+        enabled: true,
+        limit: 3,
+      });
+
+      // Lấy quota của workspace mới
+      try {
+        const quota = await this.fetchWorkspaceQuota(newWsObj);
+        if (quota) newWsObj.quota = quota;
+      } catch {}
+
+      this.workspaces.push(newWsObj);
+      this.persist();
+      console.log(`[ClickUp Auto-Replace] ✨ Thay mới hoàn tất! Workspace mới "${newWsObj.label}" (${newWsId}) đã tham gia pool (Trial MAX 23: ${trialActivated ? 'OK' : 'Chờ'}).`);
+      return newWsObj;
+    } catch (err) {
+      console.error(`[ClickUp Auto-Replace] ❌ Lỗi thay mới workspace: ${err.message}`);
+    } finally {
+      this._replacingWsSet.delete(wsKey);
+    }
+  }
+
   
 
 
@@ -1862,7 +2097,7 @@ export class WorkspacePool {
         delete: toDelete.map((t) => ({ id: String(t.id), name: t.name })),
         create: planned.filter((n) => !existingNames.has(n)),
         skippedExisting: planned.filter((n) => existingNames.has(n)),
-        warning: 'Trial MAX 23 có thể báo Không khả dụng (như lần chạy 2026-10-29) nhưng workspace vẫn gọi được — xem trước này không đảm bảo trial.',
+        warning: null,
       });
     }
     return { accounts, totalDelete: accounts.reduce((n, a) => n + (a.delete?.length || 0), 0), totalCreate: accounts.reduce((n, a) => n + (a.create?.length || 0), 0) };
@@ -2268,6 +2503,15 @@ export class WorkspacePool {
       this._checkAndTriggerAutoRecreate({ reason: 'Audit phát hiện tất cả Workspace đều bị chặn hoặc cạn Quota' });
     } else if (allExhausted && auditFailures > 0) {
       console.warn(`[ClickUpPool] Auto-Recreate bị hoãn: ${auditFailures} workspace audit THẤT BẠI trong đợt vừa rồi — không xóa workspace dựa trên dữ liệu stale.`);
+    } else {
+      // Thay mới từng workspace bị cạn quota hoặc bị block riêng lẻ
+      for (const w of enabledWs) {
+        const q = w.quota || {};
+        const fresh = (q.lastCheckedAt || 0) > now - FRESH_MS;
+        if (fresh && (q.isBlocked || w.quotaStatus === 'exhausted' || (q.weeklyLeft === 0 && q.dailyLeft === 0))) {
+          this.replaceExhaustedWorkspace(w, 'Audit phát hiện workspace cạn quota').catch(() => {});
+        }
+      }
     }
   }
 

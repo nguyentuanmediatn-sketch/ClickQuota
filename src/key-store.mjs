@@ -6,8 +6,8 @@ import path from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const APP_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-export const KEYS_FILE = path.join(APP_ROOT, '.state', 'api_keys.json');
+import { STATE_DIR, APP_ROOT } from './config.mjs';
+export const KEYS_FILE = path.join(STATE_DIR, 'api_keys.json');
 
 // Master admin password KHÔNG còn hardcode: chỉ lấy từ môi trường
 // (CLICKQUOTA_MASTER_PASSWORD trong .env). Để trống/tắt → đường xác thực master bị tắt,
@@ -38,6 +38,17 @@ export function generateOpenAIKey() {
 export function loadKeys() {
   try {
     if (!fs.existsSync(KEYS_FILE)) {
+      const seedFile = path.join(APP_ROOT, 'api_keys.seed.json');
+      if (fs.existsSync(seedFile)) {
+        try {
+          const content = fs.readFileSync(seedFile, 'utf8');
+          const parsed = JSON.parse(content);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            saveKeys(parsed);
+            return parsed;
+          }
+        } catch {}
+      }
       const defaultKey = {
         id: 'key_' + randomBytes(8).toString('hex'),
         key: generateOpenAIKey(),

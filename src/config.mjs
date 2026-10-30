@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 export const APP_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // CLICKQUOTA_STATE_DIR: tách .state của instance test/secondary khỏi bản production
 // (mặc định vẫn là <APP_ROOT>/.state).
-export const STATE_DIR = process.env.CLICKQUOTA_STATE_DIR || path.join(APP_ROOT, '.state');
+export const STATE_DIR = process.env.CLICKQUOTA_STATE_DIR || (process.env.VERCEL ? '/tmp/.state' : path.join(APP_ROOT, '.state'));
 export const STATE_FILE = path.join(STATE_DIR, 'clickup_config.json');
 export const ADMIN_SETTINGS_FILE = path.join(STATE_DIR, 'admin_settings.json');
 
@@ -67,7 +67,19 @@ export function loadConfig(env = process.env, options = {}) {
 }
 
 export function readPoolConfig() {
-  if (!fs.existsSync(STATE_FILE)) return { workspaces: [], accounts: [] };
+  if (!fs.existsSync(STATE_FILE)) {
+    const seedPath = path.join(APP_ROOT, 'clickup_config.seed.json');
+    if (fs.existsSync(seedPath)) {
+      try {
+        const seed = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
+        if (Array.isArray(seed.workspaces) && Array.isArray(seed.accounts)) {
+          persistPoolConfig(seed);
+          return seed;
+        }
+      } catch {}
+    }
+    return { workspaces: [], accounts: [] };
+  }
   const config = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   if (!Array.isArray(config.workspaces) || !Array.isArray(config.accounts)) throw new Error('workspaces and accounts must be arrays');
   for (const ws of config.workspaces) {
@@ -86,6 +98,14 @@ export function persistPoolConfig(updates) {
   try {
     fs.writeFileSync(temp, JSON.stringify(Object.assign({}, current, updates, { lastUpdated: new Date().toISOString() }), null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(temp, STATE_FILE);
+    
+    // Đồng bộ tức thời sang SharkPool nếu tồn tại trên cùng máy
+    const SHARKPOOL_STATE_FILE = 'C:\\Users\\hacke\\Desktop\\ProxyPM\\SharkPool\\ProxyClaude-main\\.state\\clickup_config.json';
+    try {
+      if (fs.existsSync(path.dirname(SHARKPOOL_STATE_FILE)) && STATE_FILE !== SHARKPOOL_STATE_FILE) {
+        fs.copyFileSync(STATE_FILE, SHARKPOOL_STATE_FILE);
+      }
+    } catch {}
   } finally {
     try { if (fs.existsSync(temp)) fs.rmSync(temp, { force: true }); } catch { /* cleanup best-effort */ }
   }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { APP_ROOT } from './config.mjs';
 
-export const LOG_DIR = process.env.CLICKQUOTA_LOG_DIR ? path.resolve(process.env.CLICKQUOTA_LOG_DIR) : path.join(APP_ROOT, '.state', 'logs');
+export const LOG_DIR = process.env.CLICKQUOTA_LOG_DIR ? path.resolve(process.env.CLICKQUOTA_LOG_DIR) : (process.env.VERCEL ? '/tmp/.state/logs' : path.join(APP_ROOT, '.state', 'logs'));
 export const REQUEST_LOG = path.join(LOG_DIR, 'request-log.jsonl');
 export const DEBUG_LOG = path.join(LOG_DIR, 'debug-log.jsonl');
 const MAX_FILE_BYTES = 2 * 1024 * 1024;

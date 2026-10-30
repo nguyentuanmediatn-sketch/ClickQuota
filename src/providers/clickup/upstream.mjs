@@ -129,6 +129,10 @@ export function resolveClickUpModel(reqModel) {
   const aliases = {
     // ── Universal Tier 1 Tool-Calling Engine (All models use claude-opus-5-5 for 200k context & reliable tools) ──
     brain: 'claude-opus-5-5',
+    'brain-2': 'claude-opus-5-5',
+    'brain2': 'claude-opus-5-5',
+    'brain-max': 'claude-opus-5-5',
+    'brain2-max': 'claude-opus-5-5',
     'claude-opus-5-5': 'claude-opus-5-5',
     'claude-opus-5': 'claude-opus-5-5',
     'claude-opus-4-6': 'claude-opus-5-5',
@@ -255,7 +259,12 @@ function serializeMessageContent(msg) {
   return [serialized, serializedCalls].filter(Boolean).join('\n');
 }
 
-export function messagesToPrompt(messages, maxChars = 200000) {
+// 2026-10-29 (§227/§243): upstream đo được ≥475k tokens context, budget 120k chars
+// cũ cắt lịch sử sớm một cách vô cớ và làm mất ngữ cảnh giữa hội thoại dài.
+// Nâng lên 300k chars (~75k tokens) — vẫn còn biên an toàn lớn so với trần đo được.
+export const UPSTREAM_BUDGET_CHARS = 300000;
+
+export function messagesToPrompt(messages, maxChars = UPSTREAM_BUDGET_CHARS) {
   if (!Array.isArray(messages) || messages.length === 0) return '';
 
   const items = messages
@@ -341,6 +350,30 @@ export function resolveActiveUserIntent(rawMessages, fallbackContent = 'Hello') 
       content: fallbackContent,
       isConsultation: false,
       isConfirmation: false,
+      isToolContinuation: false,
+    };
+  }
+
+  // Multi-turn tool loop continuation:
+  // Nếu message cuối cùng là kết quả tool (role === 'tool' | 'function' hoặc chứa tool_result),
+  // ngữ cảnh hiện tại là model tiếp tục xử lý kết quả tool vừa trả về, KHÔNG ĐƯỢC lùi về
+  // user prompt ban đầu từ turn 1 (tránh làm model tưởng user hỏi lại từ đầu).
+  const lastMsg = rawMessages[rawMessages.length - 1];
+  const isToolTurn =
+    lastMsg &&
+    (lastMsg.role === 'tool' ||
+      lastMsg.role === 'function' ||
+      (Array.isArray(lastMsg.content) &&
+        lastMsg.content.some((p) => p && (p.type === 'tool_result' || p.tool_use_id))) ||
+      (typeof lastMsg.content === 'string' && lastMsg.content.includes('<tool_result')));
+
+  if (isToolTurn) {
+    return {
+      content: 'Continue executing the task based on the provided tool execution results.',
+      rawText: serializeMessageContent(lastMsg).trim(),
+      isConsultation: false,
+      isConfirmation: false,
+      isToolContinuation: true,
     };
   }
 
@@ -369,13 +402,9 @@ export function resolveActiveUserIntent(rawMessages, fallbackContent = 'Hello') 
     rawText: lastText,
     isConsultation,
     isConfirmation,
+    isToolContinuation: false,
   };
 }
-
-// 2026-10-29 (§227/§243): upstream đo được ≥475k tokens context, budget 120k chars
-// cũ cắt lịch sử sớm một cách vô cớ và làm mất ngữ cảnh giữa hội thoại dài.
-// Nâng lên 300k chars (~75k tokens) — vẫn còn biên an toàn lớn so với trần đo được.
-export const UPSTREAM_BUDGET_CHARS = 300000;
 
 export function sanitizeMessagesForUpstream(messages, fallbackPrompt, toolsPrompt, maxBudgetChars = UPSTREAM_BUDGET_CHARS) {
   let clean = [];
@@ -581,6 +610,8 @@ export function getClickUpFallbackModels(resolvedModel) {
   const fallbacks = [resolvedModel];
   if (resolvedModel === 'google/gemini-4-argon') {
     fallbacks.push('google/gemini-3.8-flash', 'claude-sonnet-5-5');
+  } else if (resolvedModel.startsWith('claude-')) {
+    fallbacks.push('claude-sonnet-5-5', 'gpt-6.1-sol', 'gpt-6-luna');
   } else {
     fallbacks.push('gpt-6.1-sol', 'claude-sonnet-5-5', 'gpt-6-luna');
   }
@@ -609,26 +640,26 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
       let elapsedMs = Date.now() - attemptStartedAt;
       let aiRequestErrors = res.parsed?.data?.aiRequest?.errors;
 
-      // 2026-10-29 (§6.2) EMPTY-COMPLETION SAU CHỜ LÂU: rỗng mà KHÔNG có lỗi
-      // GraphQL sau >=25s là dấu hiệu upstream tự cắt vì maxTokens quá lớn, chứ
-      // không phải model từ chối. Đổi model lúc này là sai hướng — hạ thẳng
-      // maxTokens xuống 1024 và thử lại CHÍNH model đó đúng một lần.
-      // (§6.5/P2#8) đánh dấu khi retry maxTokens=1024 cứu được một lần chạm tường,
-      // để telemetry phân biệt "tường 29s nhưng đã tự khắc phục" với "rỗng hẳn".
+      // 2026-10-29 (§6.2) EMPTY-COMPLETION RECOVERY:
+      // rỗng mà KHÔNG có lỗi GraphQL là dấu hiệu upstream tự cắt vì maxTokens quá lớn (có thể
+      // xảy ra cả sau 3-10s hoặc sau 25s), chứ không nhất thiết là do model từ chối.
+      // Đổi model lúc này dễ gây lệch persona — hạ maxTokens xuống 2048 (đủ cho 800-1000 tokens reasoning
+      // + 1000-1200 tokens content/tool calls mà không bị cắt cụt giữa chừng) và thử lại CHÍNH model đó trước.
       let retryRecovered = false;
       const noGqlError = !Array.isArray(aiRequestErrors) || aiRequestErrors.length === 0;
+      const currentMax = activePayload?.variables?.input?.maxTokens || 4096;
       if (
         noGqlError &&
         !extractReplyText(res.parsed) &&
-        elapsedMs >= 25000 &&
-        (activePayload?.variables?.input?.maxTokens || 0) > 1024
+        currentMax > 2048
       ) {
-        console.warn(`[ClickUpUpstream] Model ${candidate} rỗng sau ${Math.round(elapsedMs / 1000)}s — nghi upstream cắt do maxTokens. Thử lại cùng model với maxTokens=1024...`);
+        const retryTokens = 2048;
+        console.warn(`[ClickUpUpstream] Model ${candidate} trả về completion rỗng (sau ${Math.round(elapsedMs / 1000)}s) — thử lại cùng model với maxTokens=${retryTokens}...`);
         const retryPayload = {
           ...activePayload,
           variables: {
             ...activePayload.variables,
-            input: { ...activePayload.variables.input, maxTokens: 1024 },
+            input: { ...activePayload.variables.input, maxTokens: retryTokens },
           },
         };
         try {
@@ -640,7 +671,7 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
           }
         } catch (retryErr) {
           signal?.throwIfAborted();
-          console.warn(`[ClickUpUpstream] Retry maxTokens=1024 cho ${candidate} thất bại (${retryErr.message}).`);
+          console.warn(`[ClickUpUpstream] Retry maxTokens=${retryTokens} cho ${candidate} thất bại (${retryErr.message}).`);
         }
       }
 
@@ -671,15 +702,11 @@ export async function executeClickUpWithFallback({ payload, workspaceId, session
       const preview = Object.entries(res.parsed?.data?.aiRequest || res.parsed || {})
         .map(([k, v]) => `${k}:${typeof v}(${safeLen(v)})`)
         .join(',');
-      console.warn(`[ClickUpUpstream] Model ${candidate} trả về completion rỗng (${preview}). Đang nén ngữ cảnh và thử model thay thế...`);
+      console.warn(`[ClickUpUpstream] Model ${candidate} trả về completion rỗng (${preview}). Thử model thay thế...`);
 
-      // Tự thu gọn lịch sử cho ỨNG VIÊN TIẾP THEO trên bản sao payload cục bộ
-      if (activePayload?.variables?.input?.messages?.length > 3) {
-        const msgs = activePayload.variables.input.messages;
-        const compactInput = { ...activePayload.variables.input, messages: [msgs[0], ...msgs.slice(-2)] };
-        if ((compactInput.maxTokens || 0) > 2048) compactInput.maxTokens = 2048;
-        activePayload = { ...activePayload, variables: { ...activePayload.variables, input: compactInput } };
-      } else if ((activePayload?.variables?.input?.maxTokens || 0) > 2048) {
+      // Tự hạ maxTokens cho ỨNG VIÊN TIẾP THEO trên bản sao payload cục bộ, GIỮ NGUYÊN TOÀN BỘ LỊCH SỬ HỘI THOẠI
+      // (KHÔNG cắt mồ côi [msgs[0], ...msgs.slice(-2)] làm mất toàn bộ tool calls trước đó và khiến model hỏi lại từ đầu)
+      if ((activePayload?.variables?.input?.maxTokens || 0) > 2048) {
         activePayload = {
           ...activePayload,
           variables: { ...activePayload.variables, input: { ...activePayload.variables.input, maxTokens: 2048 } },
@@ -1095,15 +1122,17 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
 
   const sanitizedMessages = sanitizeMessagesForUpstream(rawMessages, fullPrompt, toolsPrompt);
 
-  let requestedMaxTokens = Number(rawBody?.max_tokens || rawBody?.max_completion_tokens || 8192);
+  let requestedMaxTokens = Number(rawBody?.max_tokens || rawBody?.max_completion_tokens || 4096);
+  if (requestedMaxTokens > 4096) requestedMaxTokens = 4096;
+
   const estInTokens = estimateTokens(fullPrompt);
-  if (estInTokens > 16000) {
-    // 2026-10-28 (fix "lệnh trước không trả kết quả"): sàn 1024 khiến reply bị đứt
-    // GIỮA tool-call JSON khi prompt lớn → parser khôi phục được name nhưng MẤT
-    // arguments → call bị loại → model chờ result mãi. Sàn 4096 đủ cho một tool
-    // call JSON hoàn chỉnh (thường < 4KB) trong trường hợp prompt cực lớn.
-    requestedMaxTokens = Math.min(requestedMaxTokens, Math.max(4096, 30000 - estInTokens));
+  if (estInTokens > 24000) {
+    requestedMaxTokens = Math.min(requestedMaxTokens, 2560);
+  } else if (estInTokens > 16000) {
+    requestedMaxTokens = Math.min(requestedMaxTokens, 3584);
   }
+
+  const requestedEffort = String(rawBody?.reasoning_effort || rawBody?.thinking_effort || rawBody?.effort || 'max').toLowerCase();
 
   const input = {
     model: resolvedModel,
@@ -1113,6 +1142,12 @@ export async function handleClickUpRequest({ req, res, rawBody, route, config, s
     messages: sanitizedMessages,
     workspaceId: clickupPool.defaults.workspaceId || '',
     maxTokens: requestedMaxTokens,
+    // ClickUp Brain² & Deep Thinking (Max Effort)
+    thinkingEffort: requestedEffort,
+    reasoningEffort: requestedEffort,
+    thinking_effort: requestedEffort,
+    reasoning_effort: requestedEffort,
+    effort: requestedEffort,
   };
 
   const payload = {

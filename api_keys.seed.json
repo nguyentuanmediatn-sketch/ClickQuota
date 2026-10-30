@@ -1,0 +1,41 @@
+[
+  {
+    "id": "key_b304bb0e9ee241b3",
+    "key": "sk-Vt6Vdrj4gnmpMOAUUCwCWmmQ3M6vhJSKzTX8C90JKeqH5yoS",
+    "label": "deep",
+    "role": "user",
+    "active": true,
+    "requestLimit": null,
+    "tokenLimit": null,
+    "requestsCount": 97,
+    "tokensUsed": 23106,
+    "createdAt": "2026-10-30T06:38:47.557Z",
+    "lastUsedAt": "2026-10-30T08:34:21.624Z"
+  },
+  {
+    "id": "key_a35f452b297c7d28",
+    "key": "sk-oXVamWFMHMwEB02WG6eR4FGpwRpGFn7c6ftYB36Vv3218tv6",
+    "label": "1",
+    "role": "user",
+    "active": true,
+    "requestLimit": null,
+    "tokenLimit": null,
+    "requestsCount": 7,
+    "tokensUsed": 97,
+    "createdAt": "2026-10-29T00:11:14.880Z",
+    "lastUsedAt": "2026-10-30T03:10:50.972Z"
+  },
+  {
+    "id": "key_f5e341e33cb8e351",
+    "key": "sk-Qdjw8dP680VbSHyJHbTFshGePVkzKsUAuVKKrtR8CoEDkdJO",
+    "label": "Default Master Gateway Key",
+    "role": "admin",
+    "active": true,
+    "requestLimit": null,
+    "tokenLimit": null,
+    "requestsCount": 14,
+    "tokensUsed": 794,
+    "createdAt": "2026-10-27T04:20:10.989Z",
+    "lastUsedAt": "2026-10-29T00:15:47.260Z"
+  }
+]

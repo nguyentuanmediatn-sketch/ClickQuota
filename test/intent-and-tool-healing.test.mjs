@@ -34,6 +34,27 @@ test('Intent Recognition: detects consultation / brainstorming intent', () => {
   assert.equal(intent.isConfirmation, false);
 });
 
+test('Intent Recognition: detects multi-turn tool continuation and does not revert to turn-1 prompt', () => {
+  const openaiHistory = [
+    { role: 'user', content: 'Hãy kiểm tra toàn bộ code dự án' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', function: { name: 'glob', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'call_1', content: 'file1.js, file2.js' }
+  ];
+  const intent1 = resolveActiveUserIntent(openaiHistory);
+  assert.equal(intent1.isToolContinuation, true);
+  assert.ok(intent1.content.includes('Continue executing the task'));
+  assert.ok(!intent1.content.includes('Hãy kiểm tra toàn bộ code dự án'));
+
+  const anthropicHistory = [
+    { role: 'user', content: 'Hãy kiểm tra toàn bộ code dự án' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'call_2', name: 'read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_2', content: 'function main() {}' }] }
+  ];
+  const intent2 = resolveActiveUserIntent(anthropicHistory);
+  assert.equal(intent2.isToolContinuation, true);
+  assert.ok(intent2.content.includes('Continue executing the task'));
+});
+
 test('Tool Pruning: reduces heavy tool catalogs by removing non-coding MCP viewers', () => {
   const heavyTools = [
     { name: 'Bash' },

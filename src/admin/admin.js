@@ -427,10 +427,15 @@ function renderWorkspacesTable(workspaces, accounts) {
 
     const expText = ws.tokenExpHoursLeft != null ? `~${ws.tokenExpHoursLeft}h` : (ws.tokenExp ? new Date(ws.tokenExp).toLocaleDateString() : '--');
 
+    const isMax23 = typeof dLim === 'number' && dLim >= 400000;
+    const planBadge = isMax23
+      ? '<span class="badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); font-size: 10px; margin-left: 6px; vertical-align: middle;">MAX 23</span>'
+      : (typeof dLim === 'number' && dLim <= 1000 ? '<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); font-size: 10px; margin-left: 6px; vertical-align: middle;">Free / Lệch</span>' : '');
+
     return `
       <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05); transition: background 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.02)'" onmouseout="this.style.background='transparent'">
         <td style="padding: 10px 12px;">
-          <div style="font-weight: 600; color: #fff;">${escapeHtml(ws.label || 'Workspace')}</div>
+          <div style="font-weight: 600; color: #fff; display: flex; align-items: center;">${escapeHtml(ws.label || 'Workspace')}${planBadge}</div>
           <div style="font-size: 11px; color: var(--text-muted); font-family: monospace;">ID: ${escapeHtml(ws.workspaceId)}</div>
         </td>
         <td style="padding: 10px 12px; color: #38bdf8; font-weight: 600;">${typeof dLeft === 'number' ? dLeft.toLocaleString() : dLeft} / ${typeof dLim === 'number' ? dLim.toLocaleString() : dLim}</td>
