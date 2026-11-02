@@ -92,15 +92,37 @@ export const CLICKUP_UPSTREAM_VALID_MODELS = new Set([
  */
 function computeSessionKey(req, rawBody) {
   try {
+    // 1. Explicit session headers (từ Agent CLI, Cursor, Claude Code hoặc custom headers)
+    const explicitId = req?.headers?.['x-session-id'] ||
+                       req?.headers?.['session-id'] ||
+                       req?.headers?.['x-request-session-id'] ||
+                       rawBody?.session_id;
+    if (explicitId && typeof explicitId === 'string' && explicitId.trim()) {
+      return 'sess_' + createHash('sha256').update(explicitId.trim()).digest('hex').slice(0, 24);
+    }
+
+    const clientSalt = String(req?.headers?.authorization || req?.headers?.['x-api-key'] || '').slice(0, 72).trim();
+
+    // 2. Thread context / conversation history
     const msgs = Array.isArray(rawBody?.messages) ? rawBody.messages : [];
     const firstUser = msgs.find((m) => m && m.role === 'user');
-    if (!firstUser) return null;
-    const content = typeof firstUser.content === 'string'
-      ? firstUser.content
-      : JSON.stringify(firstUser.content || '');
-    if (!content) return null;
-    const clientSalt = String(req?.headers?.authorization || req?.headers?.['x-api-key'] || '').slice(0, 72);
-    return createHash('sha256').update(clientSalt + '\u0000' + content.slice(0, 512)).digest('hex').slice(0, 32);
+    if (firstUser) {
+      const content = typeof firstUser.content === 'string'
+        ? firstUser.content
+        : JSON.stringify(firstUser.content || '');
+      if (content && content.trim()) {
+        return 'ctx_' + createHash('sha256').update((clientSalt || 'anon') + '\u0000' + content.slice(0, 512)).digest('hex').slice(0, 24);
+      }
+    }
+
+    // 3. Fallback theo Client Credential hoặc Client IP
+    const clientIp = req?.headers?.['x-forwarded-for']?.split(',')?.[0]?.trim() ||
+                     req?.socket?.remoteAddress ||
+                     'unknown_ip';
+    if (clientSalt) {
+      return 'cli_' + createHash('sha256').update(clientSalt + '\u0000' + clientIp).digest('hex').slice(0, 24);
+    }
+    return 'ip_' + createHash('sha256').update(clientIp).digest('hex').slice(0, 24);
   } catch {
     return null;
   }
@@ -963,6 +985,15 @@ export async function executePooledUpstream({ payload, headers = {}, workspaceId
           const invErr = new Error(`ClickUp rejected model id "${sentModel}" (INTERNAL_SERVER_ERROR): ${errorDetail}`);
           invErr.code = 'INVALID_MODEL';
           throw invErr;
+        }
+
+        const isFatalWorkspaceError = /access_700|insufficient_workspace_access|must join workspace|unauthenticated|oom-evicted|not exist/i.test(errorDetail);
+        if (isFatalWorkspaceError) {
+          clickupPool.instantEvict(usedWorkspace, `Fatal GraphQL Error: ${errorDetail}`, 24 * 3600 * 1000);
+          if (attempt + 1 < attempts) {
+            console.warn(`[ClickUpPool] Workspace "${usedWorkspace.label}" (${usedWorkspace.workspaceId}) bị lỗi quyền/xác thực nghiêm trọng (${errorDetail}). Đã cách ly 24h & tự động failover...`);
+            continue;
+          }
         }
 
         const isModelDisabled = /ai_model_disabled|premium_models_not_entitled|not entitled/i.test(errorDetail);

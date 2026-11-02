@@ -121,9 +121,10 @@ export class WorkspacePool {
   constructor(config = {}, onPersist = null) {
     this.workspaces = [];
     this.accounts = [];
-    // Session affinity: hội thoại -> workspace (in-memory, TTL 12h, tối đa 2000 pin).
-    // Pin là tối ưu hiệu năng — mất khi restart không ảnh hưởng đúng/sai của request.
+    // Session affinity: Sticky Session 10 phút (TTL 10m, tối đa 5000 pin).
     this.sessionPins = new Map();
+    this.STICKY_SESSION_TTL_MS = 10 * 60 * 1000; // 10 phút chuẩn zlai-gateway
+    this.STANDBY_BUFFER_TARGET = 3; // Duy trì sẵn 3-5 workspace dự phòng
     this.defaults = {
       workspaceId: '',
       model: 'gpt-6-luna',
@@ -204,6 +205,7 @@ export class WorkspacePool {
         refreshToken: w.refreshToken || '',
         refreshCookie: w.refreshCookie || '',
         enabled: w.enabled !== false,
+        isStandby: Boolean(w.isStandby),
         limit: qLimit,
         queue: new UpstreamQueue(qLimit),
         activeRequests: 0,
@@ -334,6 +336,7 @@ export class WorkspacePool {
     const available = this.workspaces.filter(
       (w) =>
         w.enabled &&
+        !w.isStandby &&
         w.token &&
         (!w.cooldownUntil || w.cooldownUntil <= now) &&
         !(w.stickyBlockedUntil && w.stickyBlockedUntil > now) &&
@@ -343,6 +346,25 @@ export class WorkspacePool {
     );
 
     if (!available.length) {
+      // ⚡ STANDBY BUFFER: Kiểm tra kho đệm dự phòng trước khi tuyên bố cạn pool
+      const standby = this.workspaces.find(
+        (w) =>
+          w.isStandby &&
+          w.token &&
+          w.quotaStatus === 'available' &&
+          (!w.cooldownUntil || w.cooldownUntil <= now) &&
+          !excludeList.includes(w.workspaceId) &&
+          !excludeList.includes(w.id)
+      );
+      if (standby) {
+        standby.isStandby = false;
+        standby.enabled = true;
+        standby.cooldownUntil = 0;
+        this.persist();
+        console.log(`[ClickUpPool] ⚡ STANDBY BUFFER: Kích hoạt khẩn cấp workspace dự phòng "${standby.label}" (${standby.workspaceId}) thay vì cạn pool (<10ms)!`);
+        return await this._bindWorkspace(standby, signal, 0);
+      }
+
       // Không xóa cooldown cưỡng bức: circuit breaker và rate-limit phải được tôn trọng.
       // Báo rõ thời điểm sớm nhất có workspace hồi phục để client biết khi nào thử lại.
       const cooled = this.workspaces.filter((w) => w.enabled && w.token && w.cooldownUntil && w.cooldownUntil > now);
@@ -371,20 +393,26 @@ export class WorkspacePool {
         (w) => w.workspaceId === preferredWorkspaceId || w.id === preferredWorkspaceId
       );
       if (preferred) {
+        if (sessionKey) this._pinSession(sessionKey, preferred.workspaceId);
         return await this._bindWorkspace(preferred, signal, poolSaturation);
       }
     }
 
-    // ── Session Affinity (đa user) ──
-    // Hội thoại đã ghim workspace và workspace đó RẢNH (0 in-flight) → trả đúng nơi đó
-    // (giữ cache ấm, hành vi ổn định cho một hội thoại). Workspace ghim đang bận →
-    // nhường balancer chọn nơi khác để giữ tốc độ; bối cảnh hội thoại KHÔNG mất vì
-    // client gửi đủ lịch sử trong payload — session được ghim lại theo nơi phục vụ.
+    // ── Session Affinity (Sticky Session 10 phút) ──
+    // Client / Hội thoại được ghim vào đúng 1 Workspace duy nhất trong 10 phút.
+    // Nếu workspace đó còn khả dụng (chưa vượt quá giới hạn concurrent), ưu tiên phục vụ và gia hạn 10 phút.
     if (sessionKey) {
-      const pinnedId = this.sessionPins.get(sessionKey)?.workspaceId;
-      const pinnedWs = pinnedId ? available.find((w) => w.workspaceId === pinnedId) : null;
-      if (pinnedWs && pinnedWs.activeRequests === 0) {
-        return await this._bindWorkspace(pinnedWs, signal, poolSaturation);
+      const pin = this.sessionPins.get(sessionKey);
+      if (pin && pin.expiresAt > now) {
+        const pinnedId = pin.workspaceId;
+        if (!excludeList.includes(pinnedId)) {
+          const pinnedWs = available.find((w) => w.workspaceId === pinnedId || w.id === pinnedId);
+          const limit = Math.max(1, pinnedWs?.limit || 3);
+          if (pinnedWs && pinnedWs.activeRequests < limit && (pinnedWs.queue?.queueLength || 0) < 2) {
+            pin.expiresAt = now + (this.STICKY_SESSION_TTL_MS || 600000);
+            return await this._bindWorkspace(pinnedWs, signal, poolSaturation);
+          }
+        }
       }
     }
 
@@ -501,16 +529,106 @@ export class WorkspacePool {
   _pinSession(sessionKey, workspaceId) {
     if (!sessionKey || !workspaceId) return;
     const now = Date.now();
+    const ttl = this.STICKY_SESSION_TTL_MS || (10 * 60 * 1000);
     // Giới hạn kích thước + TTL: pin là tối ưu hiệu năng, không phải trạng thái bắt buộc
-    if (this.sessionPins.size >= 2000) {
+    if (this.sessionPins.size >= 5000) {
       for (const [key, pin] of this.sessionPins) {
         if (pin.expiresAt <= now) this.sessionPins.delete(key);
       }
-      while (this.sessionPins.size >= 2000) {
+      while (this.sessionPins.size >= 5000) {
         this.sessionPins.delete(this.sessionPins.keys().next().value);
       }
     }
-    this.sessionPins.set(sessionKey, { workspaceId, expiresAt: now + 12 * 3600 * 1000 });
+    this.sessionPins.set(sessionKey, { workspaceId, expiresAt: now + ttl });
+  }
+
+  unpinSession(sessionKey) {
+    if (!sessionKey) return;
+    this.sessionPins.delete(sessionKey);
+  }
+
+  unpinWorkspace(workspaceId) {
+    if (!workspaceId) return;
+    const wsIdStr = String(workspaceId);
+    for (const [key, pin] of this.sessionPins.entries()) {
+      if (String(pin.workspaceId) === wsIdStr) {
+        this.sessionPins.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Trụ cột 2: Standby Buffer Pool
+   * Lấy danh sách workspace dự phòng sẵn sàng phục vụ
+   */
+  getStandbyWorkspaces(accountId = null) {
+    const now = Date.now();
+    return this.workspaces.filter(
+      (w) =>
+        w.isStandby &&
+        w.token &&
+        w.quotaStatus === 'available' &&
+        (!w.cooldownUntil || w.cooldownUntil <= now) &&
+        (!accountId || w.accountId === accountId)
+    );
+  }
+
+  /**
+   * Trụ cột 2: Standby Buffer Pool
+   * Kích hoạt tức thì một workspace từ kho Standby (<10ms)
+   */
+  async activateStandbyWorkspace(accountId = null) {
+    const candidates = this.getStandbyWorkspaces(accountId);
+    if (!candidates.length) return null;
+    const chosen = candidates[0];
+    chosen.isStandby = false;
+    chosen.enabled = true;
+    chosen.cooldownUntil = 0;
+    chosen.cooldownReason = null;
+    chosen.consecutiveErrors = 0;
+    this.persist();
+    console.log(`[ClickUpPool] ⚡ STANDBY BUFFER: Kích hoạt tức thì workspace dự phòng "${chosen.label}" (${chosen.workspaceId}) thay thế trong <10ms!`);
+    return chosen;
+  }
+
+  /**
+   * Trụ cột 3: Instant Eviction
+   * Cách ly tức thì 24h đối với Workspace dính lỗi nghiêm trọng (ACCESS_700, 401/403, cạn quota)
+   * Loại bỏ ngay lập tức khỏi mọi luồng điều hướng, giải phóng ghim session và kích hoạt Standby thay thế.
+   */
+  instantEvict(ws, reason = 'unspecified_fatal_error', cooldownMs = 24 * 3600 * 1000) {
+    if (!ws || !ws.workspaceId) return;
+    const now = Date.now();
+    const wsId = String(ws.workspaceId);
+
+    ws.enabled = false;
+    ws.isBlocked = true;
+    ws.quotaStatus = 'exhausted';
+    ws.cooldownUntil = now + cooldownMs;
+    ws.cooldownReason = reason;
+    ws.gatewayCache = null;
+    ws.consecutiveErrors = Math.max(3, (ws.consecutiveErrors || 0) + 1);
+
+    if (!ws.quota) ws.quota = {};
+    ws.quota.isBlocked = true;
+    ws.quota.status = 'exhausted';
+    ws.quota.lastCheckedAt = now;
+
+    // 1. Xóa toàn bộ session pins trỏ vào workspace này
+    this.unpinWorkspace(wsId);
+
+    // 2. Phát sự kiện Circuit Open cho telemetry & alert
+    this._emitCircuitOpen(ws);
+
+    console.warn(`[ClickUpPool] 🚨 INSTANT EVICTION: Workspace "${ws.label || ws.name}" (${wsId}) bị cách ly ${Math.round(cooldownMs / 3600000)}h. Lý do: ${reason}`);
+
+    // 3. Persist ngay lập tức (không debounce)
+    this.persist();
+
+    // 4. Kích hoạt bốc Standby Buffer thay thế ngay
+    if (typeof this.activateStandbyWorkspace === 'function') {
+      this.activateStandbyWorkspace(ws.accountId).catch(() => {});
+    }
   }
 
   reportSuccess(ws, tokens = 0) {
@@ -602,7 +720,11 @@ export class WorkspacePool {
         }
       }
 
+      this.unpinWorkspace(ws.workspaceId);
       this.persist();
+      if (typeof this.activateStandbyWorkspace === 'function') {
+        this.activateStandbyWorkspace(ws.accountId).catch(() => {});
+      }
       this.replaceExhaustedWorkspace(ws, 'Workspace cạn quota ngày (USAGE_QUOTA_EXCEEDED)').catch(() => {});
       this._checkAndTriggerAutoRecreate({ accountId: ws.accountId, reason: `Workspace cạn quota ngày (USAGE_QUOTA_EXCEEDED)` });
       return;
@@ -610,17 +732,7 @@ export class WorkspacePool {
 
     const isModelDisabledOrExpired = /ai_model_disabled|premium_models_not_entitled|ai model disabled|not entitled to premium|entitlement expired|plan_not_found/i.test(errMsg);
     if (isModelDisabledOrExpired) {
-      ws.cooldownUntil = Date.now() + 24 * 3600 * 1000;
-      ws.cooldownReason = `Model bị khóa hoặc hết hạn gói Trial (${errMsg.slice(0, 80)})`;
-      ws.quotaStatus = 'exhausted';
-      if (ws.quota) {
-        ws.quota.isBlocked = true;
-        ws.quota.status = 'exhausted';
-        ws.quota.lastCheckedAt = Date.now();
-      }
-      console.warn(`[ClickUpPool] Workspace "${ws.label}" (${ws.workspaceId}) gặp lỗi AI model disabled / not entitled: ${errMsg}`);
-      this.persist();
-
+      this.instantEvict(ws, `Model bị khóa hoặc hết hạn gói Trial (${errMsg.slice(0, 80)})`, 24 * 3600 * 1000);
       this.replaceExhaustedWorkspace(ws, `Model bị khóa hoặc hết hạn gói Trial (${errMsg.slice(0, 60)})`).catch(() => {});
       this._checkAndTriggerAutoRecreate({ accountId: ws.accountId, reason: `Phát hiện lỗi Upstream: ${errMsg.slice(0, 60)}` });
       return;
@@ -638,9 +750,11 @@ export class WorkspacePool {
       return;
     }
 
-    const isAuthError = statusCode === 401 || statusCode === 403 || errMsg.includes('unauthorized');
-    if (isAuthError) {
-      ws.gatewayCache = null;
+    const isFatalAuthOrPermission = statusCode === 401 || statusCode === 403 ||
+      /unauthorized|access_700|insufficient_workspace_access|must join workspace|unauthenticated|oom-evicted/i.test(errMsg);
+    if (isFatalAuthOrPermission) {
+      this.instantEvict(ws, `Fatal Auth/Permission (${statusCode || 'GraphQL'}): ${errMsg.slice(0, 100)}`, 24 * 3600 * 1000);
+      return;
     }
 
     // Active Circuit Breaker: Cách ly 3 phút nếu lỗi mạng/server liên tiếp >= 3 lần
