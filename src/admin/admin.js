@@ -23,6 +23,7 @@ function apiUrl(path) {
   if (!origin) return path;
   return origin + (path.startsWith('/') ? path : '/' + path);
 }
+window.apiUrl = apiUrl;
 
 // Bảo mật 2026-10-28: KHÔNG còn mật khẩu master hardcode phía client.
 // Xác thực admin dùng gateway API key (operator nhập một lần vào sessionStorage)
@@ -87,6 +88,7 @@ window.submitAuthModal = async function() {
     });
     if (res.ok) {
       window.closeAuthModal();
+      window.dispatchEvent(new Event("clickquota-auth-changed"));
       if (typeof window._authSuccessCallback === 'function') {
         window._authSuccessCallback();
       } else {
@@ -186,6 +188,42 @@ window.loadKeysHub = async function() {
   }
 };
 
+window.copyKey = function(id, btnEl) {
+  const k = cachedKeys.find(item => item.id === id);
+  if (k && k.key) {
+    navigator.clipboard.writeText(k.key).then(() => {
+      if (btnEl) {
+        const orig = btnEl.innerHTML;
+        btnEl.innerHTML = '✓ Copied!';
+        btnEl.style.color = '#34d399';
+        setTimeout(() => {
+          btnEl.innerHTML = orig;
+          btnEl.style.color = '#38bdf8';
+        }, 1500);
+      } else {
+        alert('Đã copy API Key: ' + k.key);
+      }
+    }).catch(() => {
+      prompt('Copy key thủ công:', k.key);
+    });
+  } else {
+    alert('Không có plaintext key (key đã bị mã hóa).');
+  }
+};
+
+window.toggleRevealKey = function(id) {
+  const k = cachedKeys.find(item => item.id === id);
+  const codeEl = document.getElementById('key-text-' + id);
+  if (!k || !codeEl) return;
+  if (codeEl.getAttribute('data-revealed') === '1') {
+    codeEl.textContent = k.masked || '••••••••';
+    codeEl.setAttribute('data-revealed', '0');
+  } else {
+    codeEl.textContent = k.key || k.masked || '••••••••';
+    codeEl.setAttribute('data-revealed', '1');
+  }
+};
+
 function renderKeysTable(keys) {
   const tbody = $('sharkpool-keys-table-body');
   if (!tbody) return;
@@ -214,7 +252,8 @@ function renderKeysTable(keys) {
         <td style="padding: 12px 14px;">
           <div style="display: flex; align-items: center; gap: 6px;">
             <code class="key-mono" id="key-text-${escapeHtml(k.id)}">${escapeHtml(maskedKey)}</code>
-            <span style="font-size: 10px; color: var(--text-muted);" title="Plaintext key chỉ hiển thị một lần duy nhất ngay sau khi tạo">masked</span>
+            <button type="button" class="btn-ghost" style="padding: 2px 8px; font-size: 11px; color: #38bdf8; font-weight: 600;" onclick="window.copyKey('${escapeHtml(k.id)}', this)">📋 Copy</button>
+            <button type="button" class="btn-ghost" style="padding: 2px 6px; font-size: 11px;" title="Hiện / Ẩn Key" onclick="window.toggleRevealKey('${escapeHtml(k.id)}')">👁️</button>
           </div>
         </td>
         <td style="padding: 12px 14px;">${roleBadge}</td>

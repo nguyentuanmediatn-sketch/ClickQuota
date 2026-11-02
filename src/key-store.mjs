@@ -88,12 +88,12 @@ export function saveKeys(keys) {
   }
 }
 
-// Trả về danh sách keys dưới dạng public view — KHÔNG bao giờ trả plaintext key.
-// Plaintext chỉ trả về một lần duy nhất ngay sau khi createKey thành công.
-export function listKeys() {
+// Trả về danh sách keys cho Admin Dashboard (kèm plaintext key để operator copy khi cần)
+export function listKeys(includePlaintext = true) {
   const keys = loadKeys();
   return keys.map(({ key, ...pub }) => ({
     ...pub,
+    key: includePlaintext ? key : undefined,
     masked: key ? key.slice(0, 7) + '••••••••' + key.slice(-4) : ''
   }));
 }

@@ -45,15 +45,16 @@
   };
 
   const api = async (url, body) => {
-    // Bảo mật 2026-10-28: không còn fallback mật khẩu master hardcode phía client.
-    const key = sessionStorage.getItem("clickquota-api-key") || "";
+    // Bảo mật: đọc key từ sessionStorage hoặc localStorage
+    const key = sessionStorage.getItem("clickquota-api-key") || localStorage.getItem("clickquota-api-key") || "";
     const headers = { "content-type": "application/json" };
     if (key) {
       headers["Authorization"] = "Bearer " + key;
       headers["x-api-key"] = key;
       headers["x-admin-key"] = key;
     }
-    const response = await fetch(url, {
+    const targetUrl = typeof window.apiUrl === 'function' ? window.apiUrl(url) : url;
+    const response = await fetch(targetUrl, {
       method: body ? "POST" : "GET",
       headers,
       body: body ? JSON.stringify(body) : undefined,
