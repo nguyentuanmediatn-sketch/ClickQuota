@@ -142,8 +142,13 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
     const diagnostics = {};
     const requestId = randomUUID();
     const started = performance.now();
-    const routePath = String(req.url || '').split('?')[0];
-    const tracked = req.method === 'POST' && ['/v1/messages', '/v1/chat/completions', '/v1/responses'].includes(routePath);
+    const rawPath = String(req.url || '').split('?')[0];
+    const routePath = (rawPath.length > 1 && rawPath.endsWith('/')) ? rawPath.slice(0, -1) : rawPath;
+    const tracked = req.method === 'POST' && (
+      routePath.endsWith('/messages') ||
+      routePath.endsWith('/chat/completions') ||
+      routePath.endsWith('/responses')
+    );
     let recorded = false;
     const record = (aborted = false) => {
       if (!tracked || recorded) return;
@@ -152,7 +157,7 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       const durationMs = Math.round(performance.now() - started);
       notifier.recordRequest({ outcome, durationMs });
       auditLogs.request({ timestamp: new Date().toISOString(), requestId, method: req.method, path: routePath,
-        protocol: routePath === '/v1/messages' ? 'anthropic' : 'openai', requestedModel: diagnostics.requestedModel,
+        protocol: routePath.endsWith('/messages') ? 'anthropic' : 'openai', requestedModel: diagnostics.requestedModel,
         toolNames: diagnostics.toolNames, declaredToolNames: diagnostics.declaredToolNames, toolCount: diagnostics.toolCount, toolArgLengths: diagnostics.toolArgLengths, finishReason: diagnostics.finishReason, toolParseStatus: diagnostics.toolParseStatus,
         resolvedModel: diagnostics.model, workspaceId: diagnostics.workspaceId, stream: diagnostics.stream || false, status: res.statusCode,
         durationMs, ttftMs: diagnostics.ttftMs, inputTokens: diagnostics.inputTokens, outputTokens: diagnostics.outputTokens, outcome });
@@ -163,7 +168,8 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
     res.setHeader('x-request-id', requestId);
     try {
       const url = new URL(req.url, 'http://localhost');
-      const route = url.pathname;
+      const rawRoute = url.pathname;
+      const route = (rawRoute.length > 1 && rawRoute.endsWith('/')) ? rawRoute.slice(0, -1) : rawRoute;
 
       // ── Health & Diagnostics ──
       if (req.method === 'GET' && route === '/health') {
@@ -746,11 +752,35 @@ export function createServer(config, { notifier = createTelegramNotifier() } = {
       }
 
       // ── Model listing & Unified Status APIs ──
-      if (req.method === 'GET' && route === '/v1/models') {
-        const models = await providerRegistry.getAllModels();
+      const isModelsList = req.method === 'GET' && (route === '/v1/models' || route === '/models');
+      const isSingleModel = req.method === 'GET' && (route.startsWith('/v1/models/') || route.startsWith('/models/'));
+      if (isModelsList || isSingleModel) {
+        const rawModels = await providerRegistry.getAllModels();
+        // Bổ sung alias không có đuôi -CL để tương thích 100% với các IDE như ZCode/Cursor
+        const aliasModels = [];
+        for (const m of rawModels) {
+          if (m.id.endsWith('-CL')) {
+            const bareId = m.id.slice(0, -3);
+            if (!rawModels.some(rm => rm.id === bareId)) {
+              aliasModels.push({
+                ...m,
+                id: bareId,
+                alias: true,
+                aliasOf: m.id,
+              });
+            }
+          }
+        }
+        const allModels = [...rawModels, ...aliasModels];
+        if (isSingleModel) {
+          const reqId = decodeURIComponent(route.split('/').pop());
+          const found = allModels.find(m => m.id.toLowerCase() === reqId.toLowerCase());
+          if (found) return json(res, 200, found);
+          return json(res, 200, { id: reqId, object: 'model', created: Math.floor(Date.now() / 1000), owned_by: 'clickup' });
+        }
         return json(res, 200, {
           object: 'list',
-          data: models,
+          data: allModels,
         });
       }
       if (req.method === 'GET' && route === '/api/status') {

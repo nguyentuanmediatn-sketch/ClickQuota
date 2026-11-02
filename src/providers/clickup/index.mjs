@@ -19,7 +19,10 @@ export class ClickUpProvider {
     const m = model.toLowerCase().trim().replace(/[-_]thinking$/i, '');
     if (m.endsWith('-cl') || m.endsWith('_cl')) return true;
     if (m.startsWith('clickup/') || m.startsWith('cu/')) return true;
-    return CLICKUP_MODELS.some((id) => id.toLowerCase() === m);
+    return CLICKUP_MODELS.some((id) => {
+      const lid = id.toLowerCase();
+      return lid === m || lid === m + '-cl' || lid.replace(/-cl$/, '') === m;
+    });
   }
 
   normalizeModel(model) {
