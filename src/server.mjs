@@ -65,7 +65,16 @@ export function authorized(req, key) {
 // client gọi /v1, không leo thang lên admin. Nếu không đặt: giữ hành vi cũ để không khóa
 // admin hiện tại, và /admin/api/connection báo adminKeySeparated=false để nhắc cấu hình.
 const adminFailures = new Map(); // ip -> { count, firstAt, blockedUntil }
-function adminClientIp(req) { return req.socket?.remoteAddress || 'unknown'; }
+function adminClientIp(req) {
+  const cf = req.headers['cf-connecting-ip'];
+  if (cf && typeof cf === 'string') return cf.trim();
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd && typeof fwd === 'string') return fwd.split(',')[0].trim();
+  const real = req.headers['x-real-ip'];
+  if (real && typeof real === 'string') return real.trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+
 function isAdminBlocked(req) {
   const e = adminFailures.get(adminClientIp(req));
   return Boolean(e && e.blockedUntil && Date.now() < e.blockedUntil);
@@ -79,25 +88,46 @@ function recordAdminFailure(req) {
   if (e.count >= 10) e.blockedUntil = now + 300000; // 10 lần sai trong 5 phút -> khóa 5 phút
   adminFailures.set(ip, e);
 }
-function adminRateGate(req, res) {
-  // Local admin (loopback, không forwarded header) không bị khóa bởi rate limit:
-  // nếu không, kẻ tấn công qua tunnel cũng khóa được cả operator local.
+function adminRateGate(req, res, key = null) {
   if (isLocalAdmin(req)) return true;
-  if (isAdminBlocked(req)) { json(res, 429, { error: 'Too many failed admin attempts, try again later' }); return false; }
+  if (isAdminBlocked(req)) {
+    const supplied = extractSuppliedToken(req);
+    const storeAuth = isKeyAuthorized(supplied);
+    const dedicatedAdminKey = process.env.CLICKQUOTA_ADMIN_KEY || '';
+    const isValidKey = isMasterSecret(supplied) ||
+      (dedicatedAdminKey && timingSafeCompare(supplied, dedicatedAdminKey)) ||
+      (!dedicatedAdminKey && key && timingSafeCompare(supplied, key)) ||
+      (storeAuth && storeAuth.ok && storeAuth.role === 'admin');
+    if (!isValidKey) {
+      json(res, 429, { error: 'Too many failed admin attempts, try again later' });
+      return false;
+    }
+    adminFailures.delete(adminClientIp(req));
+  }
   return true;
 }
 export function adminAuthorized(req, key) {
   if (isLocalAdmin(req)) return true;
   const supplied = extractSuppliedToken(req);
-  // Master password chỉ tồn tại nếu được cấu hình qua CLICKQUOTA_MASTER_PASSWORD.
-  if (isMasterSecret(supplied)) return true;
+  if (isMasterSecret(supplied)) {
+    adminFailures.delete(adminClientIp(req));
+    return true;
+  }
   const dedicatedAdminKey = process.env.CLICKQUOTA_ADMIN_KEY || '';
-  if (dedicatedAdminKey && timingSafeCompare(supplied, dedicatedAdminKey)) return true;
-  // Khi đã tách key admin: key gateway KHÔNG còn quyền admin (chống leo thang khi lộ key gateway).
-  if (!dedicatedAdminKey && key && timingSafeCompare(supplied, key)) return true;
-  // Store key chỉ có quyền admin khi role === 'admin' — user key KHÔNG được leo thang.
+  if (dedicatedAdminKey && timingSafeCompare(supplied, dedicatedAdminKey)) {
+    adminFailures.delete(adminClientIp(req));
+    return true;
+  }
+  if (!dedicatedAdminKey && key && timingSafeCompare(supplied, key)) {
+    adminFailures.delete(adminClientIp(req));
+    return true;
+  }
   const storeAuth = isKeyAuthorized(supplied);
-  return Boolean(storeAuth && storeAuth.ok && storeAuth.role === 'admin');
+  if (storeAuth && storeAuth.ok && storeAuth.role === 'admin') {
+    adminFailures.delete(adminClientIp(req));
+    return true;
+  }
+  return false;
 }
 
 export function isLocalAdmin(req) {
