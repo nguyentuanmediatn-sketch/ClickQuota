@@ -680,6 +680,32 @@
   </div>
 </div>
 
+<!-- MODAL: XÁC THỰC ADMIN & CẤU HÌNH GATEWAY TARGET (CHỐNG LOOP POPUP) -->
+<div id="admin-auth-modal" class="modal-backdrop" style="display: none;">
+  <div class="modal-dialog">
+    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+      <h3 style="margin: 0; font-size: 15px; font-weight: 600; color: #fff;">🔑 Xác Thực Quyền Quản Trị Gateway</h3>
+      <button type="button" class="btn-ghost" style="border: none; font-size: 16px; color: var(--text-muted);" onclick="window.closeAuthModal()">✕</button>
+    </div>
+    <div style="padding: 20px;">
+      <div id="admin-auth-error" style="display: none; padding: 10px 12px; margin-bottom: 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; font-size: 12px;"></div>
+      <div style="margin-bottom: 12px;">
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">API Key Quản Trị (Master Secret / Admin Key):</label>
+        <input type="password" id="admin-auth-key-input" class="form-control" style="width: 100%; font-size: 12px;" placeholder="Nhập API Key hoặc CLICKQUOTA_MASTER_PASSWORD...">
+      </div>
+      <div style="margin-bottom: 14px;">
+        <label style="font-size: 11.5px; font-weight: 600; display: block; margin-bottom: 4px; color: var(--text-muted);">Gateway Target Origin (Tùy chọn khi mở trên Vercel):</label>
+        <input type="text" id="admin-auth-origin-input" class="form-control" style="width: 100%; font-size: 12px;" placeholder="Để trống = cùng domain, hoặc http://localhost:4310, https://tunnel...">
+        <div style="font-size: 10.5px; color: var(--text-muted); margin-top: 4px;">Dùng khi mở trên Vercel nhưng muốn kết nối vào Gateway chạy trên máy local.</div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button type="button" class="btn-ghost" onclick="window.closeAuthModal()">Hủy</button>
+        <button id="admin-auth-submit-btn" type="button" class="btn btn-primary" onclick="window.submitAuthModal()">Đăng Nhập & Kết Nối</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/admin/connection.js"></script>
 <script src="/admin/admin.js"></script>
 </body>

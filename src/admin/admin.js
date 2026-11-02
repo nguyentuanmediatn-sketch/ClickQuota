@@ -1,11 +1,34 @@
 // ClickQuota Admin Dashboard JavaScript Client (New-API & Sharkpool Standard)
 const $ = (id) => document.getElementById(id);
 
+// ── Gateway Origin & API Routing Helper (hỗ trợ Vercel kết nối về Local) ──
+function getGatewayOrigin() {
+  return localStorage.getItem('clickquota_gateway_origin') || '';
+}
+
+function setGatewayOrigin(origin) {
+  if (origin && typeof origin === 'string' && origin.trim()) {
+    let clean = origin.trim().replace(/\/+$/, '');
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+      clean = 'http://' + clean;
+    }
+    localStorage.setItem('clickquota_gateway_origin', clean);
+  } else {
+    localStorage.removeItem('clickquota_gateway_origin');
+  }
+}
+
+function apiUrl(path) {
+  const origin = getGatewayOrigin();
+  if (!origin) return path;
+  return origin + (path.startsWith('/') ? path : '/' + path);
+}
+
 // Bảo mật 2026-10-28: KHÔNG còn mật khẩu master hardcode phía client.
 // Xác thực admin dùng gateway API key (operator nhập một lần vào sessionStorage)
 // hoặc CLICKQUOTA_MASTER_PASSWORD đặt qua biến môi trường server (nhập tay khi được hỏi).
 function authHeaders() {
-  const token = sessionStorage.getItem('clickquota-api-key') || '';
+  const token = sessionStorage.getItem('clickquota-api-key') || localStorage.getItem('clickquota-api-key') || '';
   return {
     'content-type': 'application/json',
     'Authorization': 'Bearer ' + token,
@@ -13,6 +36,81 @@ function authHeaders() {
     'x-admin-key': token,
   };
 }
+
+// ── Modal xác thực Admin & Cấu hình Gateway (chống lặp prompt vô tận) ──
+window.openAuthModal = function(callback = null) {
+  window._authSuccessCallback = callback;
+  const modal = $('admin-auth-modal');
+  const input = $('admin-auth-key-input');
+  const originInput = $('admin-auth-origin-input');
+  const errDiv = $('admin-auth-error');
+  if (errDiv) errDiv.style.display = 'none';
+  if (input) input.value = sessionStorage.getItem('clickquota-api-key') || localStorage.getItem('clickquota-api-key') || '';
+  if (originInput) originInput.value = getGatewayOrigin() || '';
+  if (modal) modal.style.display = 'flex';
+  if (input) setTimeout(() => input.focus(), 100);
+};
+
+window.closeAuthModal = function() {
+  const modal = $('admin-auth-modal');
+  if (modal) modal.style.display = 'none';
+  window._authSuccessCallback = null;
+};
+
+window.submitAuthModal = async function() {
+  const key = $('admin-auth-key-input')?.value?.trim() || '';
+  const origin = $('admin-auth-origin-input')?.value?.trim() || '';
+  const errDiv = $('admin-auth-error');
+  const btn = $('admin-auth-submit-btn');
+
+  if (!key) {
+    if (errDiv) {
+      errDiv.textContent = 'Vui lòng nhập API Key!';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  setGatewayOrigin(origin);
+  sessionStorage.setItem('clickquota-api-key', key);
+  localStorage.setItem('clickquota-api-key', key);
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Đang kiểm tra...';
+  }
+
+  try {
+    const res = await fetch(apiUrl('/admin/api/clickup/status'), {
+      headers: authHeaders(),
+      cache: 'no-store'
+    });
+    if (res.ok) {
+      window.closeAuthModal();
+      if (typeof window._authSuccessCallback === 'function') {
+        window._authSuccessCallback();
+      } else {
+        window.loadClickUpHub(true);
+        window.loadKeysHub();
+      }
+      return;
+    }
+    if (errDiv) {
+      errDiv.textContent = `❌ Lỗi xác thực (HTTP ${res.status}): Key không hợp lệ hoặc Gateway không cấp quyền Admin!`;
+      errDiv.style.display = 'block';
+    }
+  } catch (err) {
+    if (errDiv) {
+      errDiv.textContent = `❌ Không kết nối được đến Gateway (${apiUrl('')}): ${err.message}`;
+      errDiv.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Đăng Nhập & Kết Nối';
+    }
+  }
+};
 
 function escapeHtml(str) {
   if (typeof str !== 'string') return String(str ?? '');
@@ -60,14 +158,10 @@ window.switchTab = function(tabName) {
 };
 
 window.resetAdminAuth = function() {
-  const curr = sessionStorage.getItem('clickquota-api-key') || '';
-  const entered = prompt('Nhập API key quản trị (hoặc CLICKQUOTA_MASTER_PASSWORD nếu server cấu hình):', curr);
-  if (entered && entered.trim()) {
-    sessionStorage.setItem('clickquota-api-key', entered.trim());
-    alert('Đã cập nhật mã khóa Admin thành công!');
+  window.openAuthModal(() => {
     window.loadClickUpHub(true);
     window.loadKeysHub();
-  }
+  });
 };
 
 // ── Sharkpool API Key Management ──────────────────────────────
@@ -75,7 +169,7 @@ let cachedKeys = [];
 
 window.loadKeysHub = async function() {
   try {
-    const res = await fetch('/admin/api/keys', {
+    const res = await fetch(apiUrl('/admin/api/keys'), {
       headers: authHeaders(),
       cache: 'no-store'
     });
@@ -179,7 +273,7 @@ window.submitCreateKey = async function() {
   const tokenLimit = $('new-key-token-limit')?.value.trim();
 
   try {
-    const res = await fetch('/admin/api/keys/create', {
+    const res = await fetch(apiUrl('/admin/api/keys/create'), {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({
@@ -207,7 +301,7 @@ window.submitCreateKey = async function() {
 
 window.toggleSharkpoolKey = async function(id, active) {
   try {
-    const res = await fetch('/admin/api/keys/toggle', {
+    const res = await fetch(apiUrl('/admin/api/keys/toggle'), {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ id, active })
@@ -228,7 +322,7 @@ window.deleteSharkpoolKey = async function(id, label) {
     return;
   }
   try {
-    const res = await fetch(`/admin/api/keys?id=${encodeURIComponent(id)}`, {
+    const res = await fetch(apiUrl(`/admin/api/keys?id=${encodeURIComponent(id)}`), {
       method: 'DELETE',
       headers: authHeaders()
     });
@@ -273,17 +367,14 @@ let cachedAccounts = [];
 window.loadClickUpHub = async function(refresh = false) {
   try {
     const query = refresh ? '?refresh=1' : '';
-    const res = await fetch('/admin/api/clickup/status' + query, {
+    const res = await fetch(apiUrl('/admin/api/clickup/status' + query), {
       headers: authHeaders(),
       cache: 'no-store'
     });
 
     if (res.status === 401 || res.status === 403) {
-      const key = prompt('Vui lòng nhập API Key quản trị (gateway key hoặc CLICKQUOTA_MASTER_PASSWORD):', sessionStorage.getItem('clickquota-api-key') || '');
-      if (key) {
-        sessionStorage.setItem('clickquota-api-key', key.trim());
-        return window.loadClickUpHub(refresh);
-      }
+      console.warn('ClickUp Status 401/403: Yêu cầu xác thực Admin');
+      window.openAuthModal();
       return;
     }
 
@@ -524,7 +615,7 @@ window.renewWs = async function(id) {
 
 window.toggleWs = async function(id, enabled) {
   try {
-    await fetch('/admin/api/clickup/workspaces/toggle', {
+    await fetch(apiUrl('/admin/api/clickup/workspaces/toggle'), {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ id, enabled })
@@ -538,7 +629,7 @@ window.toggleWs = async function(id, enabled) {
 window.deleteWs = async function(id) {
   if (!confirm('Bạn có chắc muốn xóa Workspace này khỏi Pool?')) return;
   try {
-    await fetch('/admin/api/clickup/workspaces?id=' + encodeURIComponent(id), {
+    await fetch(apiUrl('/admin/api/clickup/workspaces?id=' + encodeURIComponent(id)), {
       method: 'DELETE',
       headers: authHeaders()
     });
@@ -551,7 +642,7 @@ window.deleteWs = async function(id) {
 window.deleteAccount = async function(id) {
   if (!confirm('Bạn có chắc muốn xóa Tài khoản này khỏi Pool?')) return;
   try {
-    await fetch('/admin/api/clickup/accounts?id=' + encodeURIComponent(id), {
+    await fetch(apiUrl('/admin/api/clickup/accounts?id=' + encodeURIComponent(id)), {
       method: 'DELETE',
       headers: authHeaders()
     });
@@ -563,7 +654,7 @@ window.deleteAccount = async function(id) {
 
 window.testAccountCookie = async function(id, email) {
   try {
-    const res = await fetch('/admin/api/clickup/accounts/verify', {
+    const res = await fetch(apiUrl('/admin/api/clickup/accounts/verify'), {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ id })
@@ -860,8 +951,8 @@ async function fetchLogs() {
     const toolParse = $('log-filter-toolparse')?.value || '';
     const toolParseQuery = toolParse ? `&toolParseStatus=${encodeURIComponent(toolParse)}` : '';
     const [resReq, resDebug] = await Promise.all([
-      fetch(`/admin/api/logs?kind=request&limit=150${outcomeQuery}${toolOnly}${toolParseQuery}`, { headers: authHeaders(), cache: 'no-store' }),
-      fetch(`/admin/api/logs?kind=debug&limit=150`, { headers: authHeaders(), cache: 'no-store' })
+      fetch(apiUrl(`/admin/api/logs?kind=request&limit=150${outcomeQuery}${toolOnly}${toolParseQuery}`), { headers: authHeaders(), cache: 'no-store' }),
+      fetch(apiUrl(`/admin/api/logs?kind=debug&limit=150`), { headers: authHeaders(), cache: 'no-store' })
     ]);
     if (resReq.ok) {
       const d = await resReq.json();
